@@ -28,7 +28,10 @@
     ],
     "permissions": [
       "storage",
-      "activeTab"
+      "activeTab",
+      "contextMenus",
+      "notifications"
     ]
-  }
+  },
+  "license": "MIT"
 }

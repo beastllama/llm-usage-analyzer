@@ -2,7 +2,8 @@ export interface TokenUsage {
   input: number;
   output: number;
   cached?: number;
-  by_model: Record<string, { input: number; output: number }>;
+  // input excludes cache tokens; cache reads and writes are priced separately
+  by_model: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number; cache_write_1h?: number }>;
 }
 
 export interface UsageReport {
@@ -97,11 +98,12 @@ export interface TrendData {
   outputTokens: number;
   messageCount: number;
   sessionCount: number;
+  activeDays: number;
 }
 
 export interface UsageTrend {
   data: TrendData[];
-  percentChange: number; // vs previous period
+  percentChange: number | null; // vs previous month; null when the latest month is too short to compare
   avgDailyCost: number;
   projectedMonthlyCost: number;
 }

@@ -2,135 +2,81 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { UsageReport, AnalyzeOptions } from '../types.js';
+import type { UsageReport } from '../types.js';
 import { formatTokens } from '../parsers/claude.js';
+import { PLANS, PLAN_KEYS, costByModel } from '../pricing.js';
 
-// Model pricing (per 1M tokens)
-const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  'claude-opus-4-5-20251101': { input: 15.0, output: 75.0 },
-  'claude-sonnet-4-5-20250929': { input: 3.0, output: 15.0 },
-  'claude-3-5-sonnet-20241022': { input: 3.0, output: 15.0 },
-  'claude-3-5-sonnet-20240620': { input: 3.0, output: 15.0 },
-  'claude-3-opus-20240229': { input: 15.0, output: 75.0 },
-  'claude-3-sonnet-20240229': { input: 3.0, output: 15.0 },
-  'claude-3-5-haiku-20241022': { input: 0.80, output: 4.0 },
-  'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
-  'gpt-4o': { input: 2.5, output: 10.0 },
-  'gpt-4o-mini': { input: 0.15, output: 0.60 },
-  'default': { input: 5.0, output: 20.0 },
-};
+const DAY_MS = 24 * 60 * 60 * 1000;
 
-function calculateAPICost(report: UsageReport): number {
-  let totalCost = 0;
-
-  for (const [model, tokens] of Object.entries(report.usage.tokens.by_model)) {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    const inputCost = (tokens.input / 1_000_000) * pricing.input;
-    const outputCost = (tokens.output / 1_000_000) * pricing.output;
-    totalCost += inputCost + outputCost;
-  }
-
-  return totalCost;
+/** Calendar days covered, inclusive, on the user's clock. */
+function spanDays(start: string, end: string): number {
+  const s = new Date(start);
+  const e = new Date(end);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return 1;
+  const a = Date.UTC(s.getFullYear(), s.getMonth(), s.getDate());
+  const b = Date.UTC(e.getFullYear(), e.getMonth(), e.getDate());
+  return Math.max(1, Math.round((b - a) / DAY_MS) + 1);
 }
 
+const money = (n: number) => (n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`);
+
 export const analyzeCommand = new Command('analyze')
-  .description('Analyze a usage report and show cost comparison')
-  .argument('[file]', 'Usage report JSON file (default: usage_report.json)')
-  .option('-p, --plan <name>', 'Your current plan name', 'Claude Pro')
-  .option('--price <amount>', 'Your plan price in USD', parseFloat, 20)
-  .option('-v, --verbose', 'Show detailed breakdown')
-  .action(async (file: string | undefined, options: AnalyzeOptions) => {
-    const inputFile = file || 'usage_report.json';
-    const inputPath = path.resolve(inputFile);
+  .description('Compare pay-as-you-go cost with each Claude plan, using usage_report.json')
+  .argument('[file]', 'Usage report file', 'usage_report.json')
+  .action(async (file: string) => {
+    const inputPath = path.resolve(file);
 
     if (!fs.existsSync(inputPath)) {
       console.error(chalk.red(`\n❌ File not found: ${inputPath}`));
-      console.error(chalk.gray('   Run `llm-usage scan` first to generate a report.\n'));
+      console.error(chalk.gray('   Run `llm-usage scan` first.\n'));
       process.exit(1);
     }
 
     let report: UsageReport;
     try {
-      const content = fs.readFileSync(inputPath, 'utf-8');
-      report = JSON.parse(content);
-    } catch (err) {
-      console.error(chalk.red(`\n❌ Failed to parse report: ${err}`));
+      report = JSON.parse(fs.readFileSync(inputPath, 'utf-8'));
+      if (!report?.usage?.tokens?.by_model || !report.period) throw new Error('missing fields');
+    } catch {
+      console.error(chalk.red(`\n❌ Not a usage report: ${inputPath}`));
+      console.error(chalk.gray('   Run `llm-usage scan` to make one.\n'));
       process.exit(1);
     }
 
-    const planPrice = options.price || report.plan?.price_usd || 20;
-    const planName = options.plan || report.plan?.name || 'Claude Pro';
+    const { cost, unpricedModels } = costByModel(report.usage.tokens.by_model);
+    const pricedModels = Object.keys(report.usage.tokens.by_model).length - unpricedModels.length;
+    if (pricedModels === 0) {
+      console.log(chalk.yellow(`\n   None of the models in this report have a known price: ${unpricedModels.join(', ')}`));
+      console.log(chalk.gray('   No plan comparison is shown, because it would have no basis.\n'));
+      return;
+    }
+    const days = spanDays(report.period.start, report.period.end);
+    const monthly = cost * (30 / days);
+    const totalTokens = report.usage.tokens.input + report.usage.tokens.output;
 
-    console.log(chalk.cyan('\n📊 LLM Usage Analysis\n'));
-    console.log(chalk.gray('─'.repeat(50)));
-
-    // Token Summary
-    const totalInput = report.usage.tokens.input;
-    const totalOutput = report.usage.tokens.output;
-    const totalTokens = totalInput + totalOutput;
-
-    console.log(`\n${chalk.white('Token Usage')}`);
-    console.log(`  Input:  ${chalk.cyan(formatTokens(totalInput))}`);
-    console.log(`  Output: ${chalk.cyan(formatTokens(totalOutput))}`);
-    console.log(`  Total:  ${chalk.cyan(formatTokens(totalTokens))}`);
-
-    // Cost Analysis
-    const apiCost = calculateAPICost(report);
-
-    console.log(`\n${chalk.white('Cost Analysis')}`);
-    console.log(`  Your Plan:       ${chalk.white(planName)} ${chalk.gray(`($${planPrice}/mo)`)}`);
-    console.log(`  API Equivalent:  ${chalk.cyan(`$${apiCost.toFixed(2)}/mo`)}`);
-
-    const savings = planPrice - apiCost;
-    const savingsPercent = ((savings / planPrice) * 100).toFixed(0);
-
+    console.log(chalk.cyan('\n📊 Pay-as-you-go vs your plan\n'));
+    console.log(chalk.gray(`   ${formatTokens(totalTokens)} tokens over ${days} day${days === 1 ? '' : 's'}`));
     console.log('');
-    if (savings > 0) {
-      // Overpaying
-      console.log(chalk.yellow(`  ⚠️  You're paying $${savings.toFixed(2)} more than API would cost`));
-      console.log(chalk.gray(`      That's ${savingsPercent}% more than pay-as-you-go pricing`));
+    console.log(`   Pay-as-you-go: ${chalk.white(money(cost))} for this period`);
+    console.log(`                  ${chalk.cyan(`≈ ${money(monthly)} per month`)} ${chalk.gray('(list prices)')}`);
 
-      if (apiCost < 20) {
-        console.log(chalk.green(`\n  💡 Recommendation: Consider switching to API`));
-        console.log(chalk.gray(`     With your usage, API would cost only $${apiCost.toFixed(2)}/mo`));
-      } else if (apiCost < 100 && planPrice >= 100) {
-        console.log(chalk.green(`\n  💡 Recommendation: Consider Claude Pro ($20/mo)`));
-        console.log(chalk.gray(`     Your usage fits within the Pro tier`));
-      }
-    } else {
-      // Good value
-      const valuePercent = ((Math.abs(savings) / apiCost) * 100).toFixed(0);
-      console.log(chalk.green(`  ✅ Good value! You're saving $${Math.abs(savings).toFixed(2)} vs API`));
-      console.log(chalk.gray(`     That's ${valuePercent}% cheaper than pay-as-you-go`));
+    if (days < 7) {
+      console.log(chalk.yellow(`\n   ⚠️  Only ${days} day${days === 1 ? '' : 's'} of data. This monthly figure is a rough guess.`));
     }
 
-    // Model Breakdown
-    if (options.verbose) {
-      console.log(`\n${chalk.white('Model Breakdown')}`);
-      console.log(chalk.gray('─'.repeat(50)));
-
-      const models = Object.entries(report.usage.tokens.by_model)
-        .sort(([, a], [, b]) => (b.input + b.output) - (a.input + a.output));
-
-      for (const [model, tokens] of models) {
-        const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-        const inputCost = (tokens.input / 1_000_000) * pricing.input;
-        const outputCost = (tokens.output / 1_000_000) * pricing.output;
-        const modelCost = inputCost + outputCost;
-        const percentage = (((tokens.input + tokens.output) / totalTokens) * 100).toFixed(1);
-
-        const shortModel = model.replace('claude-', '').replace('gpt-', '');
-        console.log(`\n  ${chalk.white(shortModel)}`);
-        console.log(`    Tokens: ${formatTokens(tokens.input + tokens.output)} (${percentage}%)`);
-        console.log(`    Cost:   $${modelCost.toFixed(2)}`);
-      }
+    console.log(chalk.white('\n   Your plans, per month:'));
+    for (const key of PLAN_KEYS) {
+      const price = PLANS[key].price;
+      const diff = Math.abs(price - monthly);
+      const line = price <= monthly
+        ? chalk.green(`cheaper than pay-as-you-go by ${money(diff)}`)
+        : chalk.yellow(`${money(diff)} more than pay-as-you-go`);
+      console.log(`     ${key.padEnd(16)} ${money(price).padStart(8)}   ${line}`);
     }
 
-    // Period
-    console.log(`\n${chalk.gray('─'.repeat(50))}`);
-    const startDate = new Date(report.period.start).toLocaleDateString();
-    const endDate = new Date(report.period.end).toLocaleDateString();
-    console.log(chalk.gray(`  Period: ${startDate} - ${endDate}`));
-    console.log(chalk.gray(`  Messages: ${report.usage.messages.count} | Sessions: ${report.usage.sessions.count}`));
-    console.log('');
+    if (unpricedModels.length > 0) {
+      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.join(', ')} (left out)`));
+    }
+
+    console.log(chalk.gray('\n   Estimate only. Anthropic does not publish exact usage limits per plan.'));
+    console.log(chalk.gray('   For your real limit use `llm-usage statusline` (Pro and Max).\n'));
   });

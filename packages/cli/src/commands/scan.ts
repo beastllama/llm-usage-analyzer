@@ -4,124 +4,129 @@ import ora from 'ora';
 import * as fs from 'fs';
 import * as path from 'path';
 import {
-  scanClaudeUsage,
   claudeDataExists,
   getClaudeDataPath,
   formatTokens,
+  parseLocalDate,
 } from '../parsers/claude.js';
+import { buildReport } from '../report.js';
+import { historyFile } from '../history.js';
+import { costByModel } from '../pricing.js';
 import type { ScanOptions } from '../types.js';
 
+const money = (n: number) => (n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`);
+
 export const scanCommand = new Command('scan')
-  .description('Scan Claude Code local data for usage statistics')
-  .option('-d, --days <number>', 'Only include data from the last N days', parseInt)
+  .description('Scan Claude Code local data and write usage_report.json')
+  .option('-d, --days <number>', 'Only include the last N days', parseInt)
   .option('--start-date <date>', 'Start date (YYYY-MM-DD)')
-  .option('--end-date <date>', 'End date (YYYY-MM-DD)')
+  .option('--end-date <date>', 'End date (YYYY-MM-DD, included)')
   .option('-o, --output <file>', 'Output file path (default: usage_report.json)')
-  .option('--json', 'Output raw JSON to stdout (for piping)')
+  .option('--json', 'Print the report as JSON to stdout (for piping)')
+  .option('--no-history', 'Do not add days saved from earlier scans')
+  .option('--no-save', 'Do not save this scan to history')
   .option('-v, --verbose', 'Show detailed progress')
-  .action(async (options: ScanOptions) => {
-    // Check if Claude data exists
+  .action(async (options: ScanOptions & { save?: boolean }) => {
+    if (options.days !== undefined && (!Number.isInteger(options.days) || options.days < 1)) {
+      console.error(chalk.red('\n❌ --days must be a whole number, 1 or more.\n'));
+      process.exit(1);
+    }
+    for (const [flag, value] of [['--start-date', options.startDate], ['--end-date', options.endDate]] as const) {
+      if (value && !parseLocalDate(value)) {
+        console.error(chalk.red(`\n❌ ${flag} must look like 2026-09-30.\n`));
+        process.exit(1);
+      }
+    }
+
     if (!claudeDataExists()) {
       console.error(chalk.red('\n❌ Claude Code data not found.'));
       console.error(chalk.gray(`   Expected location: ${getClaudeDataPath()}`));
-      console.error(chalk.gray('   Make sure Claude Code CLI is installed and you have used it.\n'));
+      console.error(chalk.gray('   Use Claude Code at least once, or set CLAUDE_CONFIG_DIR.\n'));
       process.exit(1);
     }
 
-    // JSON mode: quiet output
     if (options.json) {
-      const { report } = await scanClaudeUsage(options);
+      const { report } = await buildReport({ ...options, save: options.save !== false });
       console.log(JSON.stringify(report, null, 2));
       return;
     }
 
-    // Interactive mode with progress
-    console.log(chalk.cyan('\n🔍 LLM Usage Analyzer - Local Agent\n'));
-    console.log(chalk.gray(`   Scanning: ${getClaudeDataPath()}`));
-
-    if (options.days) {
-      console.log(chalk.gray(`   Period: Last ${options.days} days`));
-    } else if (options.startDate || options.endDate) {
-      console.log(chalk.gray(`   Period: ${options.startDate || 'beginning'} to ${options.endDate || 'now'}`));
+    console.log(chalk.cyan('\n🔍 LLM Usage Analyzer · Claude Code scan\n'));
+    console.log(chalk.gray(`   Reading: ${getClaudeDataPath()}`));
+    if (options.days) console.log(chalk.gray(`   Period: last ${options.days} days`));
+    else if (options.startDate || options.endDate) {
+      console.log(chalk.gray(`   Period: ${options.startDate || 'start'} to ${options.endDate || 'today'}`));
     }
-
     console.log('');
 
-    const spinner = ora('Scanning projects...').start();
-
-    const { report, progress } = await scanClaudeUsage(options, (p) => {
-      spinner.text = `Scanning... ${p.projectsFound} projects, ${p.filesProcessed} sessions, ${p.messagesProcessed} messages`;
-    });
-
+    const spinner = ora('Reading transcripts...').start();
+    const { report, progress, historyDaysAdded } = await buildReport(
+      { ...options, save: options.save !== false },
+      (p) => {
+        spinner.text = `Reading... ${p.filesProcessed} files, ${p.messagesProcessed} replies`;
+      },
+    );
     spinner.stop();
 
-    if (progress.errors.length > 0 && options.verbose) {
-      console.log(chalk.yellow('\n⚠️  Some errors occurred:'));
-      progress.errors.slice(0, 5).forEach((err) => {
-        console.log(chalk.gray(`   ${err}`));
-      });
-      if (progress.errors.length > 5) {
-        console.log(chalk.gray(`   ...and ${progress.errors.length - 5} more`));
-      }
+    if (options.verbose && progress.errors.length > 0) {
+      console.log(chalk.yellow('⚠️  Some files were skipped:'));
+      progress.errors.slice(0, 5).forEach((err) => console.log(chalk.gray(`   ${err}`)));
+      if (progress.errors.length > 5) console.log(chalk.gray(`   …and ${progress.errors.length - 5} more`));
+      console.log('');
     }
 
-    if (progress.messagesProcessed === 0) {
-      console.log(chalk.yellow('\n⚠️  No usage data found.'));
-      console.log(chalk.gray('   This could mean:'));
-      console.log(chalk.gray('   - Claude Code hasn\'t been used yet'));
-      console.log(chalk.gray('   - The date range doesn\'t contain any data'));
-      console.log('');
+    if (report.usage.messages.count === 0) {
+      console.log(chalk.yellow('⚠️  No usage found in this period.'));
+      console.log(chalk.gray('   Claude Code may not have been used yet, or the dates do not match.\n'));
       return;
     }
 
-    // Print summary
-    console.log(chalk.green('\n✅ Scan complete!\n'));
-    console.log(chalk.white('   📊 Usage Summary'));
-    console.log(chalk.gray('   ' + '─'.repeat(40)));
-
-    console.log(`   ${chalk.white('Sessions:')}     ${progress.filesProcessed}`);
-    console.log(`   ${chalk.white('Messages:')}     ${progress.messagesProcessed}`);
-    console.log('');
-
     const totalTokens = report.usage.tokens.input + report.usage.tokens.output;
-    console.log(`   ${chalk.white('Input Tokens:')}  ${chalk.cyan(formatTokens(report.usage.tokens.input))}`);
-    console.log(`   ${chalk.white('Output Tokens:')} ${chalk.cyan(formatTokens(report.usage.tokens.output))}`);
-    console.log(`   ${chalk.white('Total Tokens:')}  ${chalk.cyan(formatTokens(totalTokens))}`);
+    const { cost, unpricedModels } = costByModel(report.usage.tokens.by_model);
+    const days = report.usage.messages.by_day.length;
 
-    if (report.usage.tokens.cached && report.usage.tokens.cached > 0) {
-      console.log(`   ${chalk.white('Cached Tokens:')} ${chalk.gray(formatTokens(report.usage.tokens.cached))}`);
+    console.log(chalk.green('✅ Scan complete\n'));
+    console.log(`   ${chalk.white('Replies:')}       ${report.usage.messages.count}  ${chalk.gray(`(${days} active days)`)}`);
+    console.log(`   ${chalk.white('Input:')}         ${chalk.cyan(formatTokens(report.usage.tokens.input))}`);
+    console.log(`   ${chalk.white('Output:')}        ${chalk.cyan(formatTokens(report.usage.tokens.output))}  ${chalk.gray('(lower bound, see note)')}`);
+    console.log(`   ${chalk.white('Total:')}         ${chalk.cyan(formatTokens(totalTokens))}`);
+    if (report.usage.tokens.cached) {
+      console.log(`   ${chalk.white('Cache:')}         ${chalk.gray(formatTokens(report.usage.tokens.cached))}`);
+    }
+    console.log(`   ${chalk.white('Pay-as-you-go:')} ${chalk.cyan(money(cost))} ${chalk.gray('at list prices, for this period')}`);
+    console.log(`   ${chalk.white('Period:')}        ${new Date(report.period.start).toLocaleDateString()} to ${new Date(report.period.end).toLocaleDateString()}`);
+
+    if (historyDaysAdded > 0) {
+      console.log(chalk.green(`\n   + ${historyDaysAdded} older day${historyDaysAdded === 1 ? '' : 's'} from your saved history`));
+      console.log(chalk.gray('     (Claude Code deletes transcripts after 30 days by default)'));
+    }
+    if (progress.duplicatesSkipped > 0) {
+      console.log(chalk.gray(`\n   Counted ${progress.messagesProcessed} replies. Skipped ${progress.duplicatesSkipped} repeated log lines.`));
+    }
+    if (unpricedModels.length > 0) {
+      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.join(', ')} (left out of the cost)`));
     }
 
-    console.log('');
-    console.log(chalk.white('   📈 By Model'));
-    console.log(chalk.gray('   ' + '─'.repeat(40)));
-
-    const models = Object.entries(report.usage.tokens.by_model)
-      .sort(([, a], [, b]) => (b.input + b.output) - (a.input + a.output));
-
-    for (const [model, tokens] of models) {
-      const modelTotal = tokens.input + tokens.output;
-      const percentage = ((modelTotal / totalTokens) * 100).toFixed(1);
-      const shortModel = model.replace('claude-', '').replace('gpt-', '');
-      console.log(`   ${chalk.gray(shortModel.padEnd(30))} ${chalk.cyan(formatTokens(modelTotal).padStart(8))} ${chalk.gray(`(${percentage}%)`)}`);
+    const outputPath = path.resolve(options.output || 'usage_report.json');
+    try {
+      const existing = fs.lstatSync(outputPath);
+      if (existing.isSymbolicLink()) {
+        console.error(chalk.red(`\n❌ Refusing to write through a symbolic link: ${outputPath}\n`));
+        process.exit(1);
+      }
+    } catch {
+      // File does not exist yet, which is fine
     }
 
-    console.log('');
-    console.log(chalk.white('   📅 Period'));
-    console.log(chalk.gray('   ' + '─'.repeat(40)));
-
-    const startDate = new Date(report.period.start).toLocaleDateString();
-    const endDate = new Date(report.period.end).toLocaleDateString();
-    console.log(`   ${chalk.white('From:')} ${startDate}  ${chalk.white('To:')} ${endDate}`);
-
-    // Write output file
-    const outputFile = options.output || 'usage_report.json';
-    const outputPath = path.resolve(outputFile);
-
-    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
+    // Personal data, so only the owner can read it
+    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2), { mode: 0o600 });
+    fs.chmodSync(outputPath, 0o600);
 
     console.log('');
     console.log(chalk.gray('   ' + '─'.repeat(40)));
-    console.log(chalk.green(`   📄 Report saved: ${outputPath}`));
-    console.log(chalk.gray('   Upload this file to the web dashboard for analysis.\n'));
+    console.log(chalk.green(`   📄 Saved: ${outputPath}`));
+    if (options.save !== false) {
+      console.log(chalk.gray(`   🗂  History: ${historyFile()}`));
+    }
+    console.log(chalk.gray('   Open the dashboard and drop this file in, or run `llm-usage analyze`.\n'));
   });

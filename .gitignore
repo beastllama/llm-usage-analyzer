@@ -28,3 +28,27 @@ dist-ssr
 
 # Local specs
 PROJECT_SPEC.md
+
+# Secrets. Never commit keys.
+.env
+.env.*
+!.env.example
+
+# Your own usage data. Personal, so keep it out of git.
+usage_report.json
+*.usage.json
+packages/cli/dist-cjs
+
+# Extension build output
+packages/extension/build
+packages/extension/.plasmo
+
+# Temporary files
+*.tmp
+
+# Dashboard bundled into the CLI package (built by npm run build:app)
+packages/cli/web
+
+# Copied in by scripts/prepack.mjs when packing
+packages/cli/README.md
+packages/cli/LICENSE

@@ -57,7 +57,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
   }
 
   const latestMonth = trends.data[trends.data.length - 1];
-  const isGrowth = trends.percentChange > 0;
+  const change = trends.percentChange;
+  const isGrowth = (change ?? 0) > 0;
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4">
@@ -65,9 +66,10 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
       <div className="flex items-center gap-4 mb-8">
         <button
           onClick={onBack}
+          aria-label="Back"
           className="p-2 rounded-full hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
         >
-          <ArrowLeft className="w-5 h-5" />
+          <ArrowLeft className="w-5 h-5" aria-hidden="true" />
         </button>
         <div>
           <h1 className="text-2xl font-bold text-white">Usage History</h1>
@@ -81,35 +83,46 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
         <div className="bg-slate-800/40 rounded-xl border border-white/5 p-5">
           <div className="flex items-center gap-2 text-slate-400 text-sm mb-2">
-            <Coins className="w-4 h-4" />
-            Projected Monthly
+            <Coins className="w-4 h-4" aria-hidden="true" />
+            Pay-as-you-go / month
           </div>
           <div className="text-2xl font-bold text-white">
             ${trends.projectedMonthlyCost.toFixed(2)}
           </div>
-          <div className="text-xs text-slate-500 mt-1">Based on avg daily usage</div>
+          <div className="text-xs text-slate-500 mt-1">Estimate at list prices, from average daily use</div>
         </div>
 
         <div className="bg-slate-800/40 rounded-xl border border-white/5 p-5">
           <div className="flex items-center gap-2 text-slate-400 text-sm mb-2">
-            {isGrowth ? <TrendingUp className="w-4 h-4 text-red-400" /> : <TrendingDown className="w-4 h-4 text-green-400" />}
-            Month over Month
+            {change === null ? null : isGrowth
+              ? <TrendingUp className="w-4 h-4 text-red-400" aria-hidden="true" />
+              : <TrendingDown className="w-4 h-4 text-green-400" aria-hidden="true" />}
+            Month over month
           </div>
-          <div className={`text-2xl font-bold ${isGrowth ? 'text-red-400' : 'text-green-400'}`}>
-            {isGrowth ? '+' : ''}{trends.percentChange.toFixed(1)}%
-          </div>
-          <div className="text-xs text-slate-500 mt-1">Cost change vs previous</div>
+          {change === null ? (
+            <>
+              <div className="text-2xl font-bold text-slate-400">—</div>
+              <div className="text-xs text-slate-500 mt-1">Not enough data in the latest month yet (needs 20 active days)</div>
+            </>
+          ) : (
+            <>
+              <div className={`text-2xl font-bold ${isGrowth ? 'text-red-400' : 'text-green-400'}`}>
+                {isGrowth ? '+' : ''}{change.toFixed(1)}%
+              </div>
+              <div className="text-xs text-slate-500 mt-1">Pay-as-you-go cost vs previous month</div>
+            </>
+          )}
         </div>
 
         <div className="bg-slate-800/40 rounded-xl border border-white/5 p-5">
           <div className="flex items-center gap-2 text-slate-400 text-sm mb-2">
-            <MessageSquare className="w-4 h-4" />
-            Avg Daily Cost
+            <MessageSquare className="w-4 h-4" aria-hidden="true" />
+            Avg per day
           </div>
           <div className="text-2xl font-bold text-white">
             ${trends.avgDailyCost.toFixed(2)}
           </div>
-          <div className="text-xs text-slate-500 mt-1">Across all periods</div>
+          <div className="text-xs text-slate-500 mt-1">Pay-as-you-go, across all calendar days</div>
         </div>
 
         <div className="bg-slate-800/40 rounded-xl border border-white/5 p-5">
@@ -128,7 +141,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Monthly Cost Trend */}
         <div className="bg-slate-800/40 rounded-xl border border-white/5 p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">Monthly Cost Trend</h3>
+          <h3 className="text-lg font-semibold text-white mb-4">Pay-as-you-go cost by month</h3>
           <div className="h-64">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={trends.data.map(d => ({ ...d, month: formatMonth(d.period) }))}>
