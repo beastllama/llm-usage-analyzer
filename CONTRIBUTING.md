@@ -43,6 +43,13 @@ CI runs the same checks on every pull request.
 - **Private by default.** The app makes no network calls and asks for no login or key. Don't add any. The served page's policy (`connect-src 'self'`) would block them anyway.
 - **Cite the source.** New prices or plan facts need a link to the official page in the PR.
 
+## 📦 Releasing (maintainers)
+
+1. Raise `version` in `packages/cli/package.json`, merge to `main`.
+2. Actions → **Publish to npm** → Run workflow. (Or push a tag that matches, like `v1.2.1`.)
+3. One-time: the `NPM_TOKEN` repository secret (an npm automation token).
+4. Pages: Settings → Pages → Source: **GitHub Actions**. Then Actions → **Deploy dashboard** → Re-run.
+
 ## 🐛 Reporting bugs
 
 Include: your OS, Node version, which command or screen, and the exact message. Don't attach real usage reports. They contain your activity.
