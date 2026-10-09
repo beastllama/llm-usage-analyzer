@@ -15,7 +15,7 @@ Code kept for reference. It is not part of the product, is not built in CI, and 
 
 **What still works**
 
-- It builds with `npm install --ignore-scripts && npx plasmo build` in `archive/extension`.
+- It builds with `npm install --ignore-scripts && npx plasmo build` in `archive/extension`. No lock file is kept, so a fresh install may pick newer versions than the ones it was last built with.
 - The popup loads in Chromium with no errors. The content scripts were not tested, because they need a logged-in console.
 
 **To revive it**, move it back to `packages/extension`, fix the scrapers against a real console page, and add fixtures.

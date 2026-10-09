@@ -46,6 +46,12 @@ packages/extension/.plasmo
 # Temporary files
 *.tmp
 
+# Never commit these by accident: packed releases, npm login tokens, and real chat or transcript exports
+*.tgz
+.npmrc
+conversations.json
+*.jsonl
+
 # Dashboard bundled into the CLI package (built by npm run build:app)
 packages/cli/web
 

@@ -1,5 +1,6 @@
-// Copies the price table from services/pricing.ts into the CLI package, which ships on its own.
-// Run: npm run sync:pricing   (a test fails if the two copies differ)
+// Copies the shared files (the price table and the estimate rules) from services/ into the CLI package,
+// which ships on its own.
+// Run: npm run sync:pricing   (a test fails if the copies differ)
 import fs from 'node:fs';
 
 const source = fs.readFileSync('services/pricing.ts', 'utf8');
@@ -19,4 +20,7 @@ export const PLAN_SHORT: Record<string, PlanKey> = {
 };
 `;
 fs.writeFileSync('packages/cli/src/pricing.ts', header + body + footer);
-console.log('packages/cli/src/pricing.ts updated');
+
+const estimate = fs.readFileSync('services/estimate.ts', 'utf8');
+fs.writeFileSync('packages/cli/src/estimate.ts', estimate);
+console.log('packages/cli/src/pricing.ts and estimate.ts updated');

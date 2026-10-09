@@ -23,6 +23,8 @@ export interface UsageReport {
     messages: {
       count: number;
       by_day: Array<{ date: string; count: number; input: number; output: number }>;
+      /** Replies whose log never recorded how they ended, so their output count may be cut short. */
+      unfinished?: number;
     };
     sessions: {
       count: number;
@@ -86,4 +88,8 @@ export interface UsageTrend {
   percentChange: number | null; // vs previous month; null when the latest month is too short to compare
   avgDailyCost: number;
   projectedMonthlyCost: number;
+  /** How many saved reports the figures use. Reports that overlap a newer one are left out. */
+  reportsUsed: number;
+  /** True when some usage has no known price and is left out of the costs. */
+  hasUnpriced: boolean;
 }

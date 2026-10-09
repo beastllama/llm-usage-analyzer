@@ -1,5 +1,5 @@
 import { Command } from 'commander';
-import { parseStatusLine, shouldRecord, recordSample, lastSample } from '../limits.js';
+import { parseStatusLine, parseWindows, shouldRecord, recordSample, lastSample } from '../limits.js';
 
 /** Read all of stdin, but give up after a short wait so the status line never hangs. */
 function readStdin(timeoutMs = 1500): Promise<string> {
@@ -21,7 +21,7 @@ function readStdin(timeoutMs = 1500): Promise<string> {
 
 /**
  * Status line for Claude Code. Claude Code runs this on each update and sends JSON on stdin.
- * It prints your live 5-hour and weekly percentages and saves them for `llm-usage limits`.
+ * It prints your live 5-hour and weekly percentages and saves them for `llm-usage-analyzer limits`.
  */
 export const statuslineCommand = new Command('statusline')
   .description('Claude Code status-line command: shows live limit % and records it (Pro and Max)')
@@ -35,18 +35,16 @@ export const statuslineCommand = new Command('statusline')
     }
 
     const sample = parseStatusLine(input);
-    if (!sample) {
-      console.log('5h — · 7d —');
-      return;
+    if (sample) {
+      try {
+        if (shouldRecord(lastSample(), sample)) recordSample(sample);
+      } catch {
+        // Recording is best effort. Never break the status line over it.
+      }
     }
 
-    try {
-      if (shouldRecord(lastSample(), sample)) recordSample(sample);
-    } catch {
-      // Recording is best effort. Never break the status line over it.
-    }
-
-    const five = `${Math.round(sample.five_hour)}%`;
-    const seven = sample.seven_day !== undefined ? `${Math.round(sample.seven_day)}%` : '—';
-    console.log(`5h ${five} · 7d ${seven}`);
+    // Show whichever windows Claude Code sent. Either can be missing on its own.
+    const { five, seven } = parseWindows(input);
+    const show = (value: number | undefined) => (value === undefined ? '—' : `${Math.round(value)}%`);
+    console.log(`5h ${show(five)} · 7d ${show(seven)}`);
   });

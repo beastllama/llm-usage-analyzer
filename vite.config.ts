@@ -55,6 +55,10 @@ export default defineConfig({
     port: 4173,
     host: 'localhost',
   },
+  build: {
+    // One page, one script: the charts library alone is most of it, and splitting it would only add a loading state
+    chunkSizeWarningLimit: 800,
+  },
   plugins: [react(), tailwindcss(), thirdPartyNotices(['@fontsource-variable/inter'])],
   resolve: {
     alias: {

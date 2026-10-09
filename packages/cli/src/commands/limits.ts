@@ -8,8 +8,12 @@ const MIN_SAMPLES_FOR_A_VERDICT = 50;
 export const limitsCommand = new Command('limits')
   .description('Downgrade check from your recorded 5-hour limit readings (Pro and Max)')
   .option('-p, --plan <plan>', 'Your current plan: pro, max5x or max20x')
-  .option('-d, --days <number>', 'Look back this many days', parseInt, 30)
+  .option('-d, --days <number>', 'Look back this many days', (v) => parseInt(v, 10), 30)
   .action((options: { plan?: string; days: number }) => {
+    if (!Number.isInteger(options.days) || options.days < 1) {
+      console.error(chalk.red('\n❌ --days must be a whole number, 1 or more.\n'));
+      process.exit(1);
+    }
     const planKey = options.plan ? PLAN_SHORT[options.plan.toLowerCase()] : undefined;
     if (!planKey) {
       console.error(chalk.red('\n❌ Tell me your current plan: --plan pro, --plan max5x or --plan max20x\n'));
@@ -23,7 +27,7 @@ export const limitsCommand = new Command('limits')
 
     if (samples.length === 0) {
       console.log(chalk.yellow('   No readings yet.'));
-      console.log(chalk.gray('   Add `llm-usage statusline` as your Claude Code status line, then use Claude Code for a few days.'));
+      console.log(chalk.gray('   Add `llm-usage-analyzer statusline` as your Claude Code status line, then use Claude Code for a few days.'));
       console.log(chalk.gray(`   Readings are saved to ${limitsFile()}\n`));
       return;
     }

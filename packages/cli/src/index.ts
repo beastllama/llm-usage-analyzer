@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createRequire } from 'module';
 import { program } from 'commander';
+import chalk from 'chalk';
 import { scanCommand } from './commands/scan.js';
 import { analyzeCommand } from './commands/analyze.js';
 import { serveCommand, launch } from './commands/serve.js';
@@ -28,7 +29,7 @@ program
 
 // With no command: open the dashboard on your own Claude Code history
 program.action(async (options: { port?: number; days?: number; open: boolean }) => {
-  await launch({ port: options.port, days: options.days, open: options.open });
+  await launch({ port: options.port, days: options.days, devOrigins: false, open: options.open });
 });
 
 program.addHelpText('after', `
@@ -36,9 +37,18 @@ Quick start:
   $ npx llm-usage-analyzer             # opens your answer in the browser
 
 More:
-  $ llm-usage scan                     # write usage_report.json (all history, plus saved older days)
-  $ llm-usage analyze                  # compare with each plan in the terminal
-  $ llm-usage limits --plan max20x     # would a lower plan have fit? (Pro and Max)
+  $ llm-usage-analyzer scan                     # write usage_report.json (all history, plus saved older days)
+  $ llm-usage-analyzer analyze                  # compare with each plan in the terminal
+  $ llm-usage-analyzer limits --plan max20x     # would a lower plan have fit? (Pro and Max)
 `);
 
-program.parse();
+// Options on the main command only count BEFORE a subcommand name, so `scan --days 5`, `limits -p pro`
+// and `serve --port 4411` reach their own commands instead of being swallowed here.
+program.enablePositionalOptions();
+// `llm-usage-analyzer scna` (a typo) should be an error, not "start the dashboard"
+program.allowExcessArguments(false);
+// Any unexpected failure (unwritable folder, bad output path...) becomes one plain line, not a stack trace
+program.parseAsync().catch((err: unknown) => {
+  console.error(chalk.red(`\n  Something went wrong: ${err instanceof Error ? err.message : String(err)}\n`));
+  process.exit(1);
+});

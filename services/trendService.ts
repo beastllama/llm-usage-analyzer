@@ -1,6 +1,7 @@
 import { StoredReport, TrendData, UsageTrend, UsageReport } from '../types';
 import { costByModel, tokenCost } from './pricing';
 import { spanDays } from './analysisService';
+import { parseDay } from './format';
 
 /** Cost of a report, summed by model at list prices. */
 function calculateReportCost(report: UsageReport): number {
@@ -26,25 +27,6 @@ export function pickNonOverlapping(reports: StoredReport[]): StoredReport[] {
     picked.push(stored);
   }
   return picked;
-}
-
-/**
- * Group stored reports by the month of each day they cover.
- * A report that spans two months is counted in both, not dumped into its start month.
- */
-export function groupReportsByMonth(reports: StoredReport[]): Map<string, StoredReport[]> {
-  const grouped = new Map<string, StoredReport[]>();
-
-  for (const stored of reports) {
-    const months = new Set(stored.report.usage.messages.by_day.map(d => monthOf(d.date)));
-    if (months.size === 0) months.add(monthOf(stored.report.period.start.slice(0, 10)));
-    for (const monthKey of months) {
-      if (!grouped.has(monthKey)) grouped.set(monthKey, []);
-      grouped.get(monthKey)!.push(stored);
-    }
-  }
-
-  return grouped;
 }
 
 /**
@@ -127,11 +109,15 @@ export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | nul
   const totalDays = reports.reduce((acc, s) => acc + spanDays(s.report.period.start, s.report.period.end), 0);
   const avgDailyCost = totalDays > 0 ? totalCost / totalDays : 0;
 
+  const unpricedTokens = reports.reduce((acc, s) => acc + costByModel(s.report.usage.tokens.by_model).unpricedTokens, 0);
+
   return {
     data: monthlyData,
     percentChange,
     avgDailyCost,
     projectedMonthlyCost: avgDailyCost * 30,
+    reportsUsed: reports.length,
+    hasUnpriced: unpricedTokens > 0,
   };
 }
 
@@ -187,8 +173,8 @@ export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
   for (const stored of reports) {
     for (const day of stored.report.usage.messages.by_day) {
       // Parse as a calendar date so the weekday does not shift with timezone
-      const [y, m, d] = day.date.split('-').map(Number);
-      const dayOfWeek = new Date(y, m - 1, d).getDay();
+      const dayOfWeek = parseDay(day.date).getDay();
+      if (!dayStats[dayOfWeek]) continue;
 
       dayStats[dayOfWeek].totalTokens += day.input + day.output;
       dayStats[dayOfWeek].totalMessages += day.count;

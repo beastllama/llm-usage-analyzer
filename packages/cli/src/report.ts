@@ -1,6 +1,6 @@
 import type { ScanOptions, UsageReport } from './types.js';
 import { scanClaudeUsage, localDayKey, ParseProgress, DayDetail } from './parsers/claude.js';
-import { loadHistory, saveHistory, addHistoryToReport, mergeForSave } from './history.js';
+import { loadHistoryChecked, saveHistory, addHistoryToReport, mergeForSave } from './history.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -9,6 +9,10 @@ export interface BuiltReport {
   progress: ParseProgress;
   /** Days added from saved history (days Claude Code has already deleted). */
   historyDaysAdded: number;
+  /** Set when the history file could not be written (the scan itself still worked). */
+  historySaveError?: string;
+  /** Set when the saved history could not be read in full. */
+  historyWarning?: string;
 }
 
 /**
@@ -25,7 +29,8 @@ export async function buildReport(
   const useHistory = options.history !== false && !hasDateFilter;
 
   let historyDaysAdded = 0;
-  const stored: Record<string, DayDetail> = loadHistory();
+  let historySaveError: string | undefined;
+  const { days: stored, warning: historyWarning } = loadHistoryChecked();
 
   if (useHistory) {
     historyDaysAdded = addHistoryToReport(report, dayDetail, stored);
@@ -36,8 +41,12 @@ export async function buildReport(
     const incomplete = new Set<string>([localDayKey(new Date())]);
     if (options.days) incomplete.add(localDayKey(new Date(Date.now() - options.days * DAY_MS)));
     const complete = Object.fromEntries(Object.entries(dayDetail).filter(([day]) => !incomplete.has(day)));
-    saveHistory(mergeForSave(stored, complete));
+    try {
+      saveHistory(mergeForSave(stored, complete));
+    } catch (err) {
+      historySaveError = (err as Error).message;
+    }
   }
 
-  return { report, progress, historyDaysAdded };
+  return { report, progress, historyDaysAdded, historySaveError, historyWarning };
 }

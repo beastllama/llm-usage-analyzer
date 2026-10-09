@@ -1,5 +1,0 @@
-{
-  "name": "LLM Usage Analyzer",
-  "description": "See whether your Claude subscription costs more or less than pay-as-you-go API pricing, from your own usage. Runs on your computer. No login, no keys.",
-  "requestFramePermissions": []
-}

@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { historyDir } from './history.js';
+import { appendPrivateLine, writePrivateFile } from './fsafe.js';
 
 /**
  * Live limit readings from Claude Code's status line (Pro and Max only).
@@ -29,6 +30,15 @@ export function limitsFile(): string {
 
 const isPercent = (v: unknown): v is number =>
   typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
+
+/** The two windows, each on its own: Claude Code can leave either one out. */
+export function parseWindows(input: unknown): { five?: number; seven?: number } {
+  const limits = (input as any)?.rate_limits;
+  return {
+    five: isPercent(limits?.five_hour?.used_percentage) ? limits.five_hour.used_percentage : undefined,
+    seven: isPercent(limits?.seven_day?.used_percentage) ? limits.seven_day.used_percentage : undefined,
+  };
+}
 
 /** Pull the rate-limit numbers out of the status-line JSON. Returns null when there is nothing usable. */
 export function parseStatusLine(input: unknown): LimitSample | null {
@@ -74,16 +84,13 @@ export function readSamples(file = limitsFile()): LimitSample[] {
 
 /** Append one sample. Trims old samples when the file grows past 2 MB. */
 export function recordSample(sample: LimitSample, file = limitsFile()): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.appendFileSync(file, JSON.stringify(sample) + '\n', { mode: 0o600 });
+  appendPrivateLine(file, JSON.stringify(sample) + '\n');
 
   try {
     if (fs.statSync(file).size > MAX_FILE_BYTES) {
       const cutoff = Date.now() - KEEP_MS;
       const kept = readSamples(file).filter(s => s.ts >= cutoff);
-      const tmp = `${file}.${process.pid}.tmp`;
-      fs.writeFileSync(tmp, kept.map(s => JSON.stringify(s) + '\n').join(''), { mode: 0o600 });
-      fs.renameSync(tmp, file);
+      writePrivateFile(file, kept.map(s => JSON.stringify(s) + '\n').join(''));
     }
   } catch {
     // Trimming is best effort. The new sample is already saved.

@@ -21,7 +21,18 @@
   }
 }
 
+/* Makes Inter the default font for everything, including buttons and chart labels */
+@theme {
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* The page is dark only, so scroll bars and form controls should be too. */
+html {
+  color-scheme: dark;
+  /* The top bar sticks to the top, so a focused or linked item must not end up behind it */
+  scroll-padding-top: 5rem;
+}
+
 body {
-  font-family: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
   background: #0b0c15;
 }
