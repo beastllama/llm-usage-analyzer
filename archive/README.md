@@ -13,10 +13,9 @@ Code kept for reference. It is not part of the product, is not built in CI, and 
 - It asks for browser permissions (tabs, storage, context menus, notifications) for a feature that most users don't need.
 - Its build framework (Plasmo) has had no release since May 2025.
 
-**What still works**
+**Status**
 
-- It builds with `npm install --ignore-scripts && npx plasmo build` in `archive/extension`. No lock file is kept, so a fresh install may pick newer versions than the ones it was last built with.
-- The popup loads in Chromium with no errors. The content scripts were not tested, because they need a logged-in console.
+- Nothing here has been tested recently. It may not build with today's packages: no lock file is kept, and one of its packages (sharp, through Plasmo) needs its install script to fetch a native file, which `--ignore-scripts` skips.
 
 **To revive it**, move it back to `packages/extension`, fix the scrapers against a real console page, and add fixtures.
 

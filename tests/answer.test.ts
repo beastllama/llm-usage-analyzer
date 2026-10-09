@@ -52,10 +52,12 @@ test('the caveats explain a short period, cut-short replies and unpriced models 
   ]);
 });
 
-test('a small unpriced share is mentioned as left out, not as a reason to doubt the answer', () => {
+test('even a small amount of unpriced usage makes the cost a minimum, and the answer says so', () => {
   const r = oneDay({ tokens: 400_000, days: 10 });
   r.usage.tokens.by_model['claude-mystery-9'] = { input: 1_000, output: 0 };
-  assert.deepEqual(describeCaveats(calculateAnalysis(r, 'Claude Pro')), ['Left out: no price known for mystery-9.']);
+  const cmp = calculateAnalysis(r, 'Claude Pro');
+  assert.equal(cmp.lowerBound, true);
+  assert.deepEqual(describeCaveats(cmp), ['We have no price for mystery-9, so the real cost is higher.']);
 });
 
 test('model names from a file cannot put control characters into the answer', () => {

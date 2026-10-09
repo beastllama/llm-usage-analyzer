@@ -1,21 +1,26 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Uploader, { StartNotice } from './components/Uploader';
-import AnalysisDashboard, { LiveStatus } from './components/AnalysisDashboard';
+import AnalysisDashboard, { LiveStatus, RefreshResult } from './components/AnalysisDashboard';
 import HistoryView from './components/HistoryView';
 import ErrorBoundary from './components/ErrorBoundary';
 import { UsageReport, StoredReport } from './types';
 import { MOCK_DATA } from './constants';
-import { Activity, History, ChevronDown, Trash2, TrendingUp, Loader2 } from 'lucide-react';
+import { Activity, History, ChevronDown, Trash2, TrendingUp, Loader2, X } from 'lucide-react';
 import { storageService } from './services/storageService';
 import { servedByCli, fetchLocalUsage, localServerIsUp } from './services/localServer';
 import { safeSession } from './services/safeStorage';
-import { plain } from './services/format';
+import { calculateMonthlyTrends } from './services/trendService';
+import { formatDate, plain, plural } from './services/format';
 
 type ViewMode = 'uploader' | 'dashboard' | 'trends';
 
 const HEALTH_EVERY_MS = 10_000;
 /** The analyzer counts as stopped after this many failed checks in a row. One slow answer is not an outage. */
 const FAILS_BEFORE_STOPPED = 2;
+/** After a delete, further deletes wait this long. A double-click would otherwise hit the next row, which slides under the pointer. */
+const DELETE_PAUSE_MS = 700;
+const UNDO_MS = 10_000;
+const NOTE_MS = 5_000;
 
 interface Toast {
   message: string;
@@ -28,48 +33,59 @@ const TITLES: Record<ViewMode, string> = {
   trends: 'Trends · LLM Usage Analyzer',
 };
 
+interface Restored {
+  reports: StoredReport[];
+  data: UsageReport | null;
+  reportId: string | null;
+  view: ViewMode;
+}
+
+/** What the screen shows when the page opens: the saved list, and where the person was before a reload. Read once, before the first paint. */
+function restoreSession(): Restored {
+  const reports = storageService.getReports();
+  const start: Restored = { reports, data: null, reportId: null, view: 'uploader' };
+  // The CLI-served page loads live data instead (see below)
+  if (servedByCli) return start;
+
+  const savedView = safeSession.get('viewMode');
+  const savedId = safeSession.get('currentReportId');
+  if (savedView && savedId) {
+    const found = reports.find((r) => r.id === savedId);
+    if (found) return { reports, data: found.report, reportId: savedId, view: savedView === 'trends' ? 'trends' : 'dashboard' };
+  } else if (savedView === 'trends' && calculateMonthlyTrends(reports).length >= 2) {
+    return { ...start, view: 'trends' };
+  }
+  return start;
+}
+
 const App: React.FC = () => {
-  const [data, setData] = useState<UsageReport | null>(null);
-  const [savedReports, setSavedReports] = useState<StoredReport[]>([]);
-  const [currentReportId, setCurrentReportId] = useState<string | null>(null);
+  const [initial] = useState(restoreSession);
+  const [data, setData] = useState<UsageReport | null>(initial.data);
+  const [savedReports, setSavedReports] = useState<StoredReport[]>(initial.reports);
+  const [currentReportId, setCurrentReportId] = useState<string | null>(initial.reportId);
   const [showHistory, setShowHistory] = useState(false);
-  const [viewMode, setViewMode] = useState<ViewMode>('uploader');
+  const [viewMode, setViewMode] = useState<ViewMode>(initial.view);
   const [isLiveData, setIsLiveData] = useState(false);
   const [live, setLive] = useState<LiveStatus>({ connected: false, updatedAt: null });
   // When the CLI serves this page, the data is read straight away: no clicks needed
   const [readingLocal, setReadingLocal] = useState(servedByCli);
   const [startNotice, setStartNotice] = useState<StartNotice | null>(null);
   const [toast, setToast] = useState<Toast | null>(null);
+  const [toastPaused, setToastPaused] = useState(false);
+  // Becomes true once the person has moved around, so the start screen can take focus on a return and not on first load
+  const [navigated, setNavigated] = useState(false);
   // Changing this key puts the screen back to a clean state after an error
   const [boundaryKey, setBoundaryKey] = useState(0);
   const historyRef = useRef<HTMLDivElement>(null);
   const historyButtonRef = useRef<HTMLButtonElement>(null);
   // A late answer from the analyzer must not revive a screen the person already left
   const liveRun = useRef(0);
+  // Reports deleted while the "Undo" message is up, so Undo puts back exactly those
+  const undoBuffer = useRef<StoredReport[]>([]);
+  const deletePause = useRef(false);
 
-  // Initialize storage and restore session state on mount
-  useEffect(() => {
-    const reports = storageService.getReports();
-    setSavedReports(reports);
-
-    // The CLI-served page loads live data instead (see below)
-    if (servedByCli) return;
-
-    // Restore session state (survives browser refresh)
-    const savedViewMode = safeSession.get('viewMode');
-    const savedReportId = safeSession.get('currentReportId');
-
-    if (savedViewMode && savedReportId) {
-      const report = reports.find(r => r.id === savedReportId);
-      if (report) {
-        setData(report.report);
-        setCurrentReportId(savedReportId);
-        setViewMode(savedViewMode === 'trends' ? 'trends' : 'dashboard');
-      }
-    } else if (savedViewMode === 'trends' && reports.length >= 2) {
-      setViewMode('trends');
-    }
-  }, []);
+  // Months of data among the saved reports. Trends need two.
+  const trendMonths = useMemo(() => calculateMonthlyTrends(savedReports).length, [savedReports]);
 
   // Persist session state on changes
   useEffect(() => {
@@ -81,12 +97,34 @@ const App: React.FC = () => {
   // The tab title says where you are
   useEffect(() => { document.title = TITLES[viewMode]; }, [viewMode]);
 
-  // A message that clears itself
+  // A message that clears itself. It waits while the pointer or the keyboard is on it, so Undo cannot vanish under a hand.
   useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), toast.undo ? 8000 : 5000);
+    if (!toast) {
+      undoBuffer.current = [];
+      setToastPaused(false);
+      return;
+    }
+    if (toastPaused) return;
+    const t = setTimeout(() => setToast(null), toast.undo ? UNDO_MS : NOTE_MS);
     return () => clearTimeout(t);
-  }, [toast]);
+  }, [toast, toastPaused]);
+
+  // A file dropped anywhere that is not the start screen must not make the browser leave the page and open the file
+  useEffect(() => {
+    const hasFiles = (e: DragEvent) => Boolean(e.dataTransfer?.types?.includes('Files'));
+    const stop = (e: DragEvent) => { if (hasFiles(e)) e.preventDefault(); };
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      if (viewMode !== 'uploader') setToast({ message: 'To open a file, press New analysis first.' });
+    };
+    window.addEventListener('dragover', stop);
+    window.addEventListener('drop', drop);
+    return () => {
+      window.removeEventListener('dragover', stop);
+      window.removeEventListener('drop', drop);
+    };
+  }, [viewMode]);
 
   // Close the Saved list with Escape or a click elsewhere
   useEffect(() => {
@@ -94,14 +132,15 @@ const App: React.FC = () => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') { setShowHistory(false); historyButtonRef.current?.focus(); }
     };
-    const onPointer = (e: MouseEvent) => {
+    // pointerdown, not mousedown: a tap on a phone does not always send a mouse event
+    const onPointer = (e: PointerEvent) => {
       if (historyRef.current && !historyRef.current.contains(e.target as Node)) setShowHistory(false);
     };
     window.addEventListener('keydown', onKey);
-    window.addEventListener('mousedown', onPointer);
+    window.addEventListener('pointerdown', onPointer);
     return () => {
       window.removeEventListener('keydown', onKey);
-      window.removeEventListener('mousedown', onPointer);
+      window.removeEventListener('pointerdown', onPointer);
     };
   }, [showHistory]);
 
@@ -120,18 +159,22 @@ const App: React.FC = () => {
     return () => { cancelled = true; clearInterval(interval); };
   }, [isLiveData]);
 
-  const handleLiveRefresh = useCallback(async (): Promise<boolean> => {
-    if (!isLiveData) return false;
+  const handleLiveRefresh = useCallback(async (): Promise<RefreshResult> => {
+    if (!isLiveData) return 'error';
     const run = liveRun.current;
     const result = await fetchLocalUsage();
-    if (run !== liveRun.current) return false;
+    // The person left this screen while the numbers were coming: say nothing about it
+    if (run !== liveRun.current) return 'ok';
     if (result.ok === false) {
-      if (result.reason === 'stopped') setLive((l) => ({ ...l, connected: false }));
-      return false;
+      if (result.reason === 'stopped') {
+        setLive((l) => ({ ...l, connected: false }));
+        return 'stopped';
+      }
+      return 'error';
     }
     setData(result.report);
     setLive({ connected: true, updatedAt: Date.now() });
-    return true;
+    return 'ok';
   }, [isLiveData]);
 
   const handleDataLoaded = useCallback((uploadedData: UsageReport, fromLiveServer: boolean = false) => {
@@ -150,14 +193,16 @@ const App: React.FC = () => {
     const total = uploadedData.usage.tokens.input + uploadedData.usage.tokens.output;
     if (total === 0 && uploadedData.usage.messages.count === 0) return;
 
+    const keepFailed = "This report couldn't be kept in your browser (storage is full or blocked). It still shows for this visit.";
     const duplicate = storageService.findDuplicateReport(uploadedData);
     if (duplicate) {
-      // Update the saved copy, so a reload shows the same numbers the user just saw
+      // Update the saved copy, so a reload shows the same numbers the person just saw
       if (storageService.updateReportData(duplicate.id, uploadedData)) setCurrentReportId(duplicate.id);
+      else setToast({ message: keepFailed });
     } else {
       const saved = storageService.saveReport(uploadedData);
       if (saved) setCurrentReportId(saved.id);
-      else setToast({ message: "This report couldn't be kept in your browser (storage is full or blocked). It still shows for this visit." });
+      else setToast({ message: keepFailed });
     }
     setSavedReports(storageService.getReports());
   }, [currentReportId]);
@@ -189,6 +234,7 @@ const App: React.FC = () => {
   const handleReset = () => {
     liveRun.current++;
     setBoundaryKey((k) => k + 1);
+    setNavigated(true);
     setData(null);
     setCurrentReportId(null);
     setIsLiveData(false);
@@ -208,19 +254,35 @@ const App: React.FC = () => {
     setViewMode('dashboard');
   };
 
-  const handleDeleteFromHistory = (stored: StoredReport) => {
-    const before = storageService.getReports();
-    storageService.deleteReport(stored.id);
-    setSavedReports(storageService.getReports());
+  /** Show "Deleted ..." with an Undo that puts back everything deleted while the message is up. */
+  const announceDeleted = (justDeleted: StoredReport[]) => {
+    undoBuffer.current = [...undoBuffer.current, ...justDeleted];
+    const count = undoBuffer.current.length;
+    setToastPaused(false);
     setToast({
-      message: `Deleted ${plain(stored.name)}.`,
+      message: count === 1 ? `Deleted ${plain(undoBuffer.current[0].name)}.` : `Deleted ${plural(count, 'saved report')}.`,
       undo: () => {
-        storageService.setReports(before);
+        const ok = storageService.restoreReports(undoBuffer.current);
+        undoBuffer.current = [];
         setSavedReports(storageService.getReports());
-        setToast(null);
+        setToast({ message: ok ? 'Put back.' : "Couldn't put it back. Your browser's storage is full or blocked." });
       },
     });
+  };
+
+  const handleDeleteFromHistory = (stored: StoredReport) => {
+    if (deletePause.current) return;
+    deletePause.current = true;
+    setTimeout(() => { deletePause.current = false; }, DELETE_PAUSE_MS);
+
+    storageService.deleteReport(stored.id);
+    setSavedReports(storageService.getReports());
+    announceDeleted([stored]);
     if (currentReportId === stored.id) handleReset();
+    // The delete button is gone, so focus goes to a place that still exists
+    requestAnimationFrame(() => {
+      (historyButtonRef.current ?? document.querySelector<HTMLElement>('main h1'))?.focus();
+    });
   };
 
   const handleDeleteAll = () => {
@@ -228,19 +290,9 @@ const App: React.FC = () => {
     storageService.clearHistory();
     setSavedReports([]);
     setShowHistory(false);
-    setToast({
-      message: `Deleted ${before.length} saved reports.`,
-      undo: () => {
-        storageService.setReports(before);
-        setSavedReports(storageService.getReports());
-        setToast(null);
-      },
-    });
+    announceDeleted(before);
     if (currentReportId) handleReset();
   };
-
-  const formatDate = (dateStr: string) =>
-    new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 
   return (
     <div className="min-h-screen bg-[#0B0C15] text-slate-200 font-sans selection:bg-indigo-500/30 relative">
@@ -251,7 +303,8 @@ const App: React.FC = () => {
       </div>
 
       <nav className="border-b border-white/10 bg-slate-950/80 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 md:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
+        {/* "relative" makes this the box the Saved list is placed in, so on a phone it spans the screen and never runs off its edge */}
+        <div className="relative max-w-7xl mx-auto px-4 md:px-6 min-h-16 py-2 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 bg-linear-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-xl flex items-center justify-center" aria-hidden="true">
               <Activity className="w-5 h-5 text-white" />
@@ -259,7 +312,7 @@ const App: React.FC = () => {
             <span className="font-bold text-lg tracking-tight text-white/90">Usage<span className="text-indigo-300">Analyzer</span></span>
           </div>
           <div className="flex items-center gap-1 md:gap-3">
-            {savedReports.length >= 2 && viewMode !== 'trends' && (
+            {trendMonths >= 2 && viewMode !== 'trends' && (
               <button
                 onClick={() => setViewMode('trends')}
                 className="flex items-center gap-2 text-sm font-medium text-slate-200 hover:text-white px-3 min-h-11 rounded-full hover:bg-white/10"
@@ -270,7 +323,7 @@ const App: React.FC = () => {
             )}
 
             {savedReports.length > 0 && viewMode !== 'trends' && (
-              <div className="relative" ref={historyRef}>
+              <div ref={historyRef}>
                 <button
                   ref={historyButtonRef}
                   onClick={() => setShowHistory(!showHistory)}
@@ -284,7 +337,7 @@ const App: React.FC = () => {
                 </button>
 
                 {showHistory && (
-                  <div id="saved-reports" className="absolute right-0 mt-2 w-[min(20rem,calc(100vw-2rem))] bg-slate-900 border border-white/15 rounded-xl shadow-xl z-50 overflow-hidden">
+                  <div id="saved-reports" className="absolute inset-x-4 md:inset-x-auto md:right-6 md:w-80 top-full mt-1 bg-slate-900 border border-white/15 rounded-xl shadow-xl z-50 overflow-hidden">
                     <ul className="max-h-64 overflow-y-auto">
                       {savedReports.map((stored) => (
                         <li key={stored.id} className="flex items-center hover:bg-white/5">
@@ -330,6 +383,26 @@ const App: React.FC = () => {
         </div>
       </nav>
 
+      {/* Right after the top bar in the reading order, so Undo is one Tab away from where a delete happened */}
+      {toast && (
+        <div
+          role="status"
+          onMouseEnter={() => setToastPaused(true)}
+          onMouseLeave={() => setToastPaused(false)}
+          onFocus={() => setToastPaused(true)}
+          onBlur={() => setToastPaused(false)}
+          className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] bg-slate-800 border border-white/20 text-slate-100 text-sm rounded-xl shadow-xl pl-4 pr-1 py-1 flex items-center gap-1"
+        >
+          <span className="py-1 min-w-0 break-words">{toast.message}</span>
+          {toast.undo && (
+            <button onClick={toast.undo} className="font-semibold text-indigo-200 hover:text-white underline min-h-11 px-2">Undo</button>
+          )}
+          <button onClick={() => setToast(null)} aria-label="Dismiss message" className="min-w-11 min-h-11 flex items-center justify-center text-slate-300 hover:text-white">
+            <X className="w-4 h-4" aria-hidden="true" />
+          </button>
+        </div>
+      )}
+
       <main className="relative z-10">
         <ErrorBoundary
           key={boundaryKey}
@@ -346,7 +419,7 @@ const App: React.FC = () => {
             </div>
           )}
           {viewMode === 'uploader' && !readingLocal && (
-            <Uploader onDataLoaded={handleDataLoaded} onLoadDemo={handleLoadDemo} initialNotice={startNotice} />
+            <Uploader onDataLoaded={handleDataLoaded} onLoadDemo={handleLoadDemo} initialNotice={startNotice} focusHeading={navigated} />
           )}
           {viewMode === 'dashboard' && data && (
             <AnalysisDashboard
@@ -362,15 +435,6 @@ const App: React.FC = () => {
           )}
         </ErrorBoundary>
       </main>
-
-      {toast && (
-        <div role="status" className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 max-w-[calc(100vw-2rem)] bg-slate-800 border border-white/20 text-slate-100 text-sm rounded-xl shadow-xl px-4 py-2 flex items-center gap-3">
-          <span>{toast.message}</span>
-          {toast.undo && (
-            <button onClick={toast.undo} className="font-semibold text-indigo-200 hover:text-white underline min-h-11 px-1">Undo</button>
-          )}
-        </div>
-      )}
     </div>
   );
 };

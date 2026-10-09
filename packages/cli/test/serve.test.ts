@@ -159,7 +159,7 @@ test('the package is named and wired for npx, and ships the dashboard', async ()
 });
 
 // ---- Hardening ----
-import { normalizeOrigin } from '../src/commands/serve.ts';
+import { normalizeOrigin, browserCommand } from '../src/commands/serve.ts';
 
 test('--origin values must be a plain origin: no path, no *, no "null", no other scheme', () => {
   assert.equal(normalizeOrigin('https://example.com'), 'https://example.com');
@@ -274,6 +274,80 @@ test('responses say they are for this origin only', async () => {
     running = await startServer({ port: 0, webDir: web, quiet: true });
     assert.equal((await request(running.port, '/')).headers['cross-origin-resource-policy'], 'same-origin');
     assert.equal((await request(running.port, '/api/health')).headers['cross-origin-resource-policy'], 'same-origin');
+  } finally {
+    await running?.close();
+  }
+});
+
+test('a dashboard on the allowlist can read the data even though the browser calls it "cross-site"', async () => {
+  const web = makeWeb();
+  let running: RunningServer | undefined;
+  try {
+    // 127.0.0.1:5173 is "cross-site" to localhost:<port>, and so is a dashboard hosted on another domain
+    running = await startServer({ port: 0, webDir: web, quiet: true, origins: ['https://dashboard.example'] });
+    for (const origin of ['http://127.0.0.1:5173', 'http://localhost:5173', 'https://dashboard.example']) {
+      const r = await request(running.port, '/api/health', { Origin: origin, 'Sec-Fetch-Site': 'cross-site' });
+      assert.equal(r.status, 200, origin);
+      assert.equal(r.headers['access-control-allow-origin'], origin, origin);
+    }
+    // an origin that is not on the list is still refused, with or without the browser's marker
+    const other = await request(running.port, '/api/health', { Origin: 'https://evil.example', 'Sec-Fetch-Site': 'cross-site' });
+    assert.equal(other.status, 403);
+    assert.equal(other.headers['access-control-allow-origin'], undefined);
+    // and so is a cross-site request with no origin at all (a script tag, an image, a link)
+    const bare = await request(running.port, '/api/usage', { 'Sec-Fetch-Site': 'cross-site' });
+    assert.equal(bare.status, 403);
+  } finally {
+    await running?.close();
+  }
+});
+
+test('a refusal carries the same protective headers as any other answer', async () => {
+  const web = makeWeb();
+  let running: RunningServer | undefined;
+  try {
+    running = await startServer({ port: 0, webDir: web, quiet: true });
+    const badHost = await request(running.port, '/api/usage', { Host: 'evil.example' });
+    const crossSite = await request(running.port, '/api/usage', { 'Sec-Fetch-Site': 'cross-site' });
+    for (const r of [badHost, crossSite]) {
+      assert.equal(r.status, 403);
+      assert.equal(r.headers['x-content-type-options'], 'nosniff');
+      assert.equal(r.headers['referrer-policy'], 'no-referrer');
+      assert.equal(r.headers['cross-origin-resource-policy'], 'same-origin');
+    }
+  } finally {
+    await running?.close();
+  }
+});
+
+test('the browser is opened by its full path, so a planted file in the current folder is never run', () => {
+  assert.deepEqual(browserCommand('http://localhost:3456/', 'darwin'), ['/usr/bin/open', ['http://localhost:3456/']]);
+  assert.deepEqual(browserCommand('http://localhost:3456/', 'linux'), ['xdg-open', ['http://localhost:3456/']]);
+  const [win, args] = browserCommand('http://localhost:3456/', 'win32', { SystemRoot: 'D:\\WINNT' });
+  assert.equal(win, 'D:\\WINNT\\System32\\rundll32.exe');
+  assert.deepEqual(args, ['url.dll,FileProtocolHandler', 'http://localhost:3456/']);
+  assert.equal(browserCommand('x', 'win32', {})[0], 'C:\\Windows\\System32\\rundll32.exe');
+  assert.equal(browserCommand('x', 'win32', { windir: 'E:\\Win' })[0], 'E:\\Win\\System32\\rundll32.exe');
+});
+
+test('aborted downloads of a big file do not leave files open', { skip: !fs.existsSync('/proc/self/fd') }, async () => {
+  const web = makeWeb();
+  fs.writeFileSync(path.join(web, 'assets', 'big.js'), Buffer.alloc(60 * 1024 * 1024, 97));
+  const openFiles = () => fs.readdirSync('/proc/self/fd').length;
+  let running: RunningServer | undefined;
+  try {
+    running = await startServer({ port: 0, webDir: web, quiet: true });
+    const before = openFiles();
+    await Promise.all(Array.from({ length: 40 }, () => new Promise<void>((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port: running!.port, path: '/assets/big.js', headers: { Host: `localhost:${running!.port}` } }, (res) => {
+        res.once('data', () => { req.destroy(); resolve(); });
+      });
+      req.on('error', () => resolve());
+      req.end();
+    })));
+    await new Promise((r) => setTimeout(r, 500));
+    const after = openFiles();
+    assert.ok(after - before < 10, `${after - before} files were left open`);
   } finally {
     await running?.close();
   }

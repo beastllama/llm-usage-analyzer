@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { plain, formatCount, formatUsd, formatApproxUsd, formatTokenNumber, parseDay, formatDay, formatDate } from '../services/format.ts';
+import { plain, formatCount, formatUsd, formatApproxUsd, formatAtLeastUsd, plural, calendarDays, daysBetween, formatTokenNumber, parseDay, formatDay, formatDate } from '../services/format.ts';
 
 test('dollars have thousands separators and two decimals', () => {
   assert.equal(formatUsd(0), '$0.00');
@@ -65,4 +65,58 @@ test('a date from a report is written out, and text that is not a date is kept a
   assert.equal(formatDate(new Date(2026, 8, 30, 12).toISOString()), 'Sep 30, 2026');
   assert.equal(formatDate('not a date'), 'not a date');
   assert.equal(formatDate('bad\u001b[0m'), 'bad[0m');
+});
+
+test('a minimum is rounded down, never up', () => {
+  assert.equal(formatAtLeastUsd(105.1), '$100', 'the case from the review: it must not read "at least $110"');
+  assert.equal(formatAtLeastUsd(109.99), '$100');
+  assert.equal(formatAtLeastUsd(110), '$110');
+  assert.equal(formatAtLeastUsd(99.9), '$99');
+  assert.equal(formatAtLeastUsd(10), '$10');
+  assert.equal(formatAtLeastUsd(9.999), '$9.99');
+  assert.equal(formatAtLeastUsd(4.29), '$4.29', 'an exact amount is not pushed down by floating-point error');
+  assert.equal(formatAtLeastUsd(0.07), '$0.07');
+  assert.equal(formatAtLeastUsd(1234.5), '$1,230');
+  assert.equal(formatAtLeastUsd(0), '$0.00');
+  assert.equal(formatAtLeastUsd(-3), '$0.00');
+  assert.equal(formatAtLeastUsd(NaN), '$0.00');
+  // and it never reads higher than the real figure
+  for (const n of [0.005, 0.994, 3.333, 9.9999, 10.5, 55.55, 99.99, 100, 104.99, 999.99, 12345.67]) {
+    assert.ok(Number(formatAtLeastUsd(n).replace(/[$,]/g, '')) <= n, `at least ${n}`);
+  }
+});
+
+test('plural words', () => {
+  assert.equal(plural(1, 'report'), '1 report');
+  assert.equal(plural(0, 'report'), '0 reports');
+  assert.equal(plural(2, 'report'), '2 reports');
+  assert.equal(plural(1200, 'reply', 'replies'), '1,200 replies');
+  assert.equal(plural(1, 'reply', 'replies'), '1 reply');
+});
+
+test('calendar days list every day from the first to the last, including both', () => {
+  assert.deepEqual(calendarDays('2026-09-28', '2026-10-02'), ['2026-09-28', '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02']);
+  assert.deepEqual(calendarDays('2026-02-27', '2026-03-01'), ['2026-02-27', '2026-02-28', '2026-03-01']);
+  assert.deepEqual(calendarDays('2028-02-28', '2028-03-01'), ['2028-02-28', '2028-02-29', '2028-03-01'], 'a leap year');
+  assert.deepEqual(calendarDays('2026-12-30', '2027-01-02'), ['2026-12-30', '2026-12-31', '2027-01-01', '2027-01-02']);
+  assert.deepEqual(calendarDays('2026-10-05', '2026-10-05'), ['2026-10-05']);
+  assert.deepEqual(calendarDays('2026-10-05', '2026-10-04'), []);
+  assert.equal(daysBetween('2026-10-01', '2026-10-09'), 8);
+  assert.equal(daysBetween('2026-10-09', '2026-10-09'), 0);
+});
+
+test('calendar days are not lost in zones where the clock changes at midnight', () => {
+  // The review found the chart dropping its last day in these zones (a DST change at 00:00 skips that midnight)
+  const before = process.env.TZ;
+  try {
+    for (const tz of ['America/Santiago', 'Asia/Beirut', 'America/Havana', 'Atlantic/Azores', 'Africa/Cairo', 'Pacific/Auckland', 'America/Sao_Paulo', 'Australia/Lord_Howe']) {
+      process.env.TZ = tz;
+      assert.equal(calendarDays('2026-09-01', '2026-09-15').length, 15, tz);
+      assert.equal(calendarDays('2026-03-20', '2026-04-10').length, 22, tz);
+      assert.equal(calendarDays('2026-10-20', '2026-11-10').length, 22, tz);
+      assert.equal(calendarDays('2026-01-01', '2026-12-31').length, 365, tz);
+    }
+  } finally {
+    if (before === undefined) delete process.env.TZ; else process.env.TZ = before;
+  }
 });

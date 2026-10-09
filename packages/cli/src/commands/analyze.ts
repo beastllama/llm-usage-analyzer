@@ -69,8 +69,8 @@ export const analyzeCommand = new Command('analyze')
     if (quality.unfinishedShare > MINIMUM_SHARE) {
       console.log(chalk.yellow(`\n   ⚠️  ${Math.round(quality.unfinishedShare * 100)}% of replies were logged before they finished, so their output is undercounted.`));
     }
-    if (quality.unpricedShare > MINIMUM_SHARE) {
-      console.log(chalk.yellow(`\n   ⚠️  ${Math.round(quality.unpricedShare * 100)}% of the tokens are from models with no known price.`));
+    if (quality.unpricedTokens > 0) {
+      console.log(chalk.yellow(`\n   ⚠️  Some usage is from models with no known price (${unpricedModels.map(plain).join(', ')}). The cost above leaves it out.`));
     }
     if (quality.lowerBound) {
       console.log(chalk.yellow('   So the pay-as-you-go cost is a minimum. The real cost is higher. A minimum can show that a plan is the better deal, but not that pay-as-you-go is.'));
@@ -89,10 +89,6 @@ export const analyzeCommand = new Command('analyze')
             ? chalk.yellow(`can't tell: pay-as-you-go would cost at least ${money(monthly)}`)
             : chalk.yellow(`${money(diff)} more than pay-as-you-go`);
       console.log(`     ${key.padEnd(16)} ${money(price).padStart(8)}   ${line}`);
-    }
-
-    if (unpricedModels.length > 0) {
-      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.map(plain).join(', ')} (left out)`));
     }
 
     console.log(chalk.gray('\n   Price only: a cheaper plan may not give you enough usage.'));

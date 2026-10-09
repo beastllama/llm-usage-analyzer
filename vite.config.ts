@@ -4,6 +4,38 @@ import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
+const LICENSE_FILE = /^(licen[sc]e|copying)(\.(md|txt))?$/i;
+
+/** Every license file under a folder, at most `depth` levels down, never inside node_modules. */
+function nestedLicenseFiles(dir: string, depth: number): string[] {
+  if (depth < 0) return [];
+  const found: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) found.push(...nestedLicenseFiles(full, depth - 1));
+    else if (LICENSE_FILE.test(entry.name)) found.push(full);
+  }
+  return found;
+}
+
+/**
+ * The license text of a package: the file at its root. A package that bundles other people's code (victory-vendor
+ * carries copies of several d3 packages) may have no root file, only the files of the code it carries. Those are
+ * included, each under its own path, because they are what the bundled code is licensed under.
+ */
+function licenseText(dir: string, pkg: { license?: unknown }): string {
+  const root = fs.readdirSync(dir).find((f) => LICENSE_FILE.test(f));
+  if (root) return fs.readFileSync(path.join(dir, root), 'utf8').trim();
+
+  const license = typeof pkg.license === 'string' ? pkg.license : JSON.stringify(pkg.license);
+  const nested = nestedLicenseFiles(dir, 3);
+  if (nested.length === 0) return `(This package ships no license file. Its package.json says: ${JSON.stringify(license)})`;
+  const parts = nested.sort().map((file) => `[${path.relative(dir, file).split(path.sep).join('/')}]\n${fs.readFileSync(file, 'utf8').trim()}`);
+  return `(This package has no license file of its own. Its package.json says: ${JSON.stringify(license)}.\n` +
+    `It carries other packages' code, and these are their license files.)\n\n${parts.join('\n\n')}`;
+}
+
 /**
  * Writes THIRD_PARTY_NOTICES.txt next to the built page: the name, version and full license text of every
  * package that ends up in it. Their licenses ask for the notice to travel with the code.
@@ -25,12 +57,8 @@ function thirdPartyNotices(extra: string[] = []): Plugin {
 
       const entries = [...dirs].sort().map((dir) => {
         const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
-        const licenseFile = fs.readdirSync(dir).find((f) => /^(licen[sc]e|copying)(\.(md|txt))?$/i.test(f));
-        const text = licenseFile
-          ? fs.readFileSync(path.join(dir, licenseFile), 'utf8').trim()
-          : `(This package ships no license file. Its package.json says: ${JSON.stringify(pkg.license)})`;
         const license = typeof pkg.license === 'string' ? pkg.license : JSON.stringify(pkg.license);
-        return `${pkg.name}@${pkg.version} (${license})\n${'-'.repeat(60)}\n${text}\n`;
+        return `${pkg.name}@${pkg.version} (${license})\n${'-'.repeat(60)}\n${licenseText(dir, pkg)}\n`;
       });
 
       this.emitFile({

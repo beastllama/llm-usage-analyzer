@@ -3,7 +3,9 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import { Info } from 'lucide-react';
 import { UsageReport } from '../types';
 import { analyzeUsagePattern } from '../services/analysisService';
+import { withQuietDays } from '../services/dailyRows';
 import { formatCount, formatDay } from '../services/format';
+import { CHART_START_SIZE } from './chartSize';
 
 interface UsagePatternPanelProps {
   data: UsageReport;
@@ -17,6 +19,8 @@ interface UsagePatternPanelProps {
  */
 const PlanFitAnalyzer: React.FC<UsagePatternPanelProps> = ({ data, showCliHint = true }) => {
   const pattern = useMemo(() => analyzeUsagePattern(data), [data]);
+  // Quiet days are drawn as zero, so the time axis has no gaps
+  const dailyRows = useMemo(() => withQuietDays(data.usage.messages.by_day), [data]);
 
   return (
     <div className="space-y-6">
@@ -47,10 +51,10 @@ const PlanFitAnalyzer: React.FC<UsagePatternPanelProps> = ({ data, showCliHint =
 
       {data.usage.messages.by_day.length > 1 && (
         <div className="h-[220px] w-full" role="img" aria-label="Bar chart of replies per day">
-          <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={data.usage.messages.by_day} accessibilityLayer={false}>
+          <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
+            <BarChart data={dailyRows} accessibilityLayer={false}>
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-              <XAxis dataKey="date" stroke="#cbd5e1" fontSize={11} tickFormatter={(d: string) => d.slice(5)} />
+              <XAxis dataKey="date" stroke="#cbd5e1" fontSize={11} tickFormatter={(d: string) => formatDay(d)} />
               <YAxis stroke="#cbd5e1" fontSize={11} allowDecimals={false} />
               <Tooltip
                 contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
@@ -67,8 +71,8 @@ const PlanFitAnalyzer: React.FC<UsagePatternPanelProps> = ({ data, showCliHint =
         <div className="flex gap-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl p-4 text-sm text-slate-100">
           <Info className="w-5 h-5 text-indigo-200 shrink-0 mt-0.5" aria-hidden="true" />
           <p>
-            Want to see your real limit? On Pro or Max, set <code className="text-indigo-100">llm-usage-analyzer statusline</code> as your Claude Code status line (steps are in the README, under Live limits).
-            It records your live 5-hour and weekly percentages. After a few days, <code className="text-indigo-100">llm-usage-analyzer limits --plan pro</code> shows the downgrade check.
+            Want to see your real limit? On Pro or Max, with Claude Code 2.1.243 or newer, set <code className="text-indigo-100">llm-usage-analyzer statusline</code> as your Claude Code status line (steps are in the README, under Live limits).
+            It records your live 5-hour and weekly percentages. After a few days, <code className="text-indigo-100">llm-usage-analyzer limits --plan max5x</code> (use the plan you pay for) shows the downgrade check.
           </p>
         </div>
       )}

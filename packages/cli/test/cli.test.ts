@@ -33,6 +33,8 @@ beforeEach(() => {
     ...process.env,
     CLAUDE_CONFIG_DIR: path.join(dir, 'claude'),
     LLM_USAGE_HOME: path.join(dir, 'home'),
+    // `node --test` in a real terminal passes FORCE_COLOR=1 to what it runs, and that beats NO_COLOR
+    FORCE_COLOR: '0',
     NO_COLOR: '1',
   };
 });
@@ -181,4 +183,139 @@ test('scan only says the output is a minimum when some replies were really cut s
   assert.equal(cut.status, 0, cut.stderr);
   assert.match(cut.stdout, /Output:.*a minimum: some replies were logged before they finished/);
   assert.match(cut.stdout, /1 reply was logged before finishing/);
+});
+
+test('colour never leaks into the output, even when the test runner forces it on', () => {
+  const r = spawnSync(process.execPath, ['--import', 'tsx', ENTRY, 'analyze', path.join(dir, 'missing.json')], {
+    env: { ...env, FORCE_COLOR: '0' }, encoding: 'utf8', cwd: CLI_ROOT,
+  });
+  assert.doesNotMatch(r.stdout + r.stderr, /\u001b\[/);
+});
+
+test('"help" and "help <command>" work, and a mistyped command names the real ones', () => {
+  const help = run(['help']);
+  assert.equal(help.status, 0, help.stderr);
+  assert.match(help.stdout, /scan/);
+  const helpScan = run(['help', 'scan']);
+  assert.equal(helpScan.status, 0, helpScan.stderr);
+  assert.match(helpScan.stdout, /Usage: llm-usage-analyzer scan/);
+
+  const typo = run(['scna']);
+  assert.notEqual(typo.status, 0);
+  assert.match(typo.stderr, /unknown command 'scna'/);
+  assert.match(typo.stderr, /scan, analyze, serve, statusline, limits/);
+});
+
+test('an option written before a command is an error, not silently ignored', () => {
+  const r = run(['--days', '2', 'scan', '--json', '--no-save']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /--days 2 must come after the command, for example: llm-usage-analyzer scan --days 2/);
+  assert.equal(r.stdout, '', 'the scan did not run');
+  const port = run(['--port', '4555', 'serve']);
+  assert.notEqual(port.status, 0);
+  assert.match(port.stderr, /--port 4555 must come after the command/);
+  // after the command it still works
+  assert.equal(repliesIn(['--days', '5']), 2);
+});
+
+test('numbers must be plain digits: 0x50, 1e3, 3456abc, 08 and -1 are all refused', () => {
+  for (const bad of ['0x50', '1e3', '3456abc', '08', '-1', ' 80', '']) {
+    const r = run(['--port', bad, '--no-open']);
+    assert.notEqual(r.status, 0, `port [${bad}]`);
+    assert.match(r.stdout + r.stderr, /--port must be a whole number/, `port [${bad}]`);
+  }
+  for (const bad of ['2abc', '1e0', '0x1', '0']) {
+    const r = run(['scan', '--days', bad, '--no-save']);
+    assert.notEqual(r.status, 0, `days [${bad}]`);
+    assert.match(r.stdout + r.stderr, /--days must be a whole number/, `days [${bad}]`);
+  }
+});
+
+test('limits --plan only accepts the real plan names, not names that every object has', () => {
+  for (const name of ['constructor', '__proto__', 'toString', 'hasOwnProperty', 'PRO2']) {
+    const r = run(['limits', '--plan', name]);
+    assert.notEqual(r.status, 0, name);
+    assert.match(r.stderr, /Tell me your current plan/, name);
+    assert.doesNotMatch(r.stdout + r.stderr, /\[native code\]|\[object Object\]|Something went wrong/, name);
+  }
+  assert.equal(run(['limits', '--plan', 'MAX5X']).status, 0, 'case does not matter');
+});
+
+test('the status line always prints one line and exits 0, whatever it is sent', () => {
+  const cases: Array<[string, string]> = [
+    ['no input at all', ''],
+    ['text', 'hello'],
+    ['broken JSON', '{"rate_limits":'],
+    ['an empty object', '{}'],
+    ['the wrong types', '{"rate_limits":{"five_hour":{"used_percentage":"high"},"seven_day":null}}'],
+    ['a huge message', '{"x":"' + 'a'.repeat(3 * 1024 * 1024) + '"}'],
+  ];
+  for (const [name, input] of cases) {
+    const r = run(['statusline'], input);
+    assert.equal(r.status, 0, name);
+    assert.equal(r.stdout.trim(), '5h — · 7d —', name);
+  }
+  assert.equal(run(['statusline'], '{"rate_limits":{"five_hour":{"used_percentage":12.4},"seven_day":{"used_percentage":41}}}').stdout.trim(), '5h 12% · 7d 41%');
+});
+
+test('the status line answers as soon as the message is complete, without waiting for the pipe to close', async () => {
+  const child = spawn(process.execPath, ['--import', 'tsx', ENTRY, 'statusline'], { env, cwd: CLI_ROOT, stdio: ['pipe', 'pipe', 'pipe'] });
+  let out = '';
+  child.stdout.on('data', (d) => (out += d));
+  const started = Date.now();
+  child.stdin.write('{"rate_limits":{"five_hour":{"used_percentage":7}}}');   // and stdin stays open
+  const code: number = await new Promise((resolve) => child.on('close', (c) => resolve(c ?? -1)));
+  assert.equal(code, 0);
+  assert.equal(out.trim(), '5h 7% · 7d —');
+  assert.ok(Date.now() - started < 1400, 'it did not sit out the 1.5 second wait');
+});
+
+test('the program keeps running when its output pipe is closed (for example, "| head -1")', async () => {
+  const child = spawn(process.execPath, ['--import', 'tsx', ENTRY, '--no-open', '--port', '0'], { env, cwd: CLI_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    const port: number = await new Promise((resolve, reject) => {
+      let text = '';
+      const timer = setTimeout(() => reject(new Error('the server did not start')), 15_000);
+      child.stdout.on('data', (d) => {
+        text += d;
+        const m = /http:\/\/localhost:(\d+)\//.exec(text);
+        if (m) { clearTimeout(timer); resolve(Number(m[1])); }
+      });
+    });
+    // The reader goes away
+    child.stdout.destroy();
+    child.stderr.destroy();
+    // Every read of the usage prints a line to the terminal, which is what failed once the reader had gone
+    for (let i = 0; i < 3; i++) {
+      const res = await fetch(`http://127.0.0.1:${port}/api/usage`);
+      assert.equal(res.status, 200, `request ${i + 1}`);
+      await new Promise((r) => setTimeout(r, 2200));   // past the short cache, so each request prints
+    }
+    assert.equal(child.exitCode, null, 'still running');
+  } finally {
+    child.kill();
+  }
+});
+
+test('a time zone change between two scans does not double count (through the real command)', () => {
+  const home = path.join(dir, 'tzhome');
+  const base = { ...env, LLM_USAGE_HOME: home };
+  const scan = (tz: string, extra: string[]) => spawnSync(process.execPath, ['--import', 'tsx', ENTRY, 'scan', '--json', ...extra], { env: { ...base, TZ: tz }, encoding: 'utf8', cwd: CLI_ROOT });
+  const first = JSON.parse(scan('America/New_York', []).stdout);
+  const again = JSON.parse(scan('Asia/Tokyo', ['--no-save']).stdout);
+  assert.equal(again.usage.messages.count, first.usage.messages.count);
+});
+
+test('scan warns before writing the report into a git folder, and not otherwise', () => {
+  const repo = path.join(dir, 'repo');
+  fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
+  const inside = run(['scan', '--no-save', '-o', path.join(repo, 'usage_report.json')]);
+  assert.equal(inside.status, 0, inside.stderr);
+  const warn = inside.stdout.indexOf('about to be written into a git repository');
+  const saved = inside.stdout.indexOf('Saved:');
+  assert.ok(warn >= 0 && saved > warn, 'the warning comes first');
+  const plainFolder = path.join(dir, 'plain');
+  fs.mkdirSync(plainFolder);
+  const elsewhere = run(['scan', '--no-save', '-o', path.join(plainFolder, 'usage_report.json')]);
+  assert.doesNotMatch(elsewhere.stdout, /git repository/);
 });

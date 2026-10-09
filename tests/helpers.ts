@@ -1,5 +1,5 @@
 import { MOCK_DATA } from '../constants.ts';
-import type { UsageReport } from '../types.ts';
+import type { StoredReport, UsageReport } from '../types.ts';
 
 /** A moment on the viewer's own clock, as the ISO text a report stores. Reports are read on the local calendar. */
 export const at = (y: number, m: number, d: number, h = 0, min = 0) => new Date(y, m - 1, d, h, min).toISOString();
@@ -28,4 +28,29 @@ export function oneDay(opts: { tokens: number; replies?: number; unfinished?: nu
       sessions: { count: 1 },
     },
   } as Partial<UsageReport>);
+}
+
+/** Day keys for one month: daysOf('2026-09', 3) is 2026-09-01, -02, -03. */
+export const daysOf = (month: string, count: number, from = 1) =>
+  Array.from({ length: count }, (_, i) => `${month}-${String(from + i).padStart(2, '0')}`);
+
+const dayParts = (key: string): [number, number, number] => [+key.slice(0, 4), +key.slice(5, 7), +key.slice(8, 10)];
+
+/**
+ * A saved report with one reply and 1,000 input tokens on each of the given days (Sonnet 5.5 by default, $0.002 a day).
+ * `unfinished` is how many of the replies were cut short in the log.
+ */
+export function storedReport(id: string, days: string[], savedAt: string, opts: { model?: string; unfinished?: number } = {}): StoredReport {
+  const model = opts.model ?? 'claude-sonnet-5-5';
+  return {
+    id, savedAt, name: id,
+    report: report({
+      period: { start: at(...dayParts(days[0])), end: at(...dayParts(days[days.length - 1])) },
+      usage: {
+        tokens: { input: days.length * 1000, output: 0, by_model: { [model]: { input: days.length * 1000, output: 0 } } },
+        messages: { count: days.length, by_day: days.map((date) => ({ date, count: 1, input: 1000, output: 0 })), unfinished: opts.unfinished },
+        sessions: { count: 1 },
+      },
+    } as Partial<UsageReport>),
+  };
 }

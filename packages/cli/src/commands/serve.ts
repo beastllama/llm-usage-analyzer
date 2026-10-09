@@ -2,12 +2,14 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { spawn } from 'child_process';
+import { pipeline } from 'stream';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { claudeDataExists, getClaudeDataPath } from '../parsers/claude.js';
 import { buildReport } from '../report.js';
 import type { UsageReport } from '../types.js';
+import { wholeNumber } from '../args.js';
 
 export const DEFAULT_PORT = 3456;
 // How many ports above the default to try when it is busy and the user did not pick one
@@ -184,19 +186,26 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       res.end(JSON.stringify(body));
     };
 
+    // On every answer, including a refusal
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
     // Block requests whose Host header is not this server (DNS rebinding)
     if (!isAllowedHost(req.headers.host, actualPort)) {
       json(403, { error: 'Forbidden host' });
       return;
     }
 
-    // A request from another website is never wanted here, even if the browser would hide the answer from it
-    if (url.startsWith('/api/') && req.headers['sec-fetch-site'] === 'cross-site') {
+    const origin = allowedOrigin(req.headers.origin, allowlist);
+
+    // A request from another website is not wanted here, unless it comes from a dashboard on the allowlist
+    // (a dev page on 127.0.0.1 is "cross-site" to localhost, and so is a dashboard you host yourself)
+    if (url.startsWith('/api/') && req.headers['sec-fetch-site'] === 'cross-site' && !origin) {
       json(403, { error: 'Forbidden' });
       return;
     }
 
-    const origin = allowedOrigin(req.headers.origin, allowlist);
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
@@ -207,9 +216,6 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     if (req.headers['access-control-request-private-network'] === 'true' && origin) {
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
 
     if (req.method === 'OPTIONS') {
       res.statusCode = origin ? 204 : 403;
@@ -271,9 +277,8 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       if (req.method === 'HEAD') {
         res.end();
       } else {
-        const stream = fs.createReadStream(file);
-        stream.on('error', () => res.destroy());
-        stream.pipe(res);
+        // pipeline closes the file when the other end goes away, so an aborted download cannot leave it open
+        pipeline(fs.createReadStream(file), res, () => { /* a reader that left is not an error */ });
       }
     }
   };
@@ -317,12 +322,26 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   };
 }
 
+/**
+ * The program that opens an address in the default browser. On macOS and Windows it is given by its full path:
+ * Windows looks in the current folder first, so a bare "rundll32" could run a file planted in the folder you start from.
+ */
+export function browserCommand(
+  url: string,
+  platform: string = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): [string, string[]] {
+  if (platform === 'darwin') return ['/usr/bin/open', [url]];
+  if (platform === 'win32') {
+    const root = env.SystemRoot || env.windir || 'C:\\Windows';
+    return [`${root}\\System32\\rundll32.exe`, ['url.dll,FileProtocolHandler', url]];
+  }
+  return ['xdg-open', [url]];
+}
+
 /** Open an address in the default browser. Fails quietly: the address is printed anyway. */
 export function openBrowser(url: string): void {
-  const [cmd, args]: [string, string[]] =
-    process.platform === 'darwin' ? ['open', [url]]
-    : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
-    : ['xdg-open', [url]];
+  const [cmd, args] = browserCommand(url);
   try {
     const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
     child.on('error', () => {});
@@ -333,6 +352,8 @@ export function openBrowser(url: string): void {
 }
 
 export interface LaunchOptions {
+  /** The command to suggest when the port is busy. */
+  retryCommand?: string;
   port?: number;
   days?: number;
   origins?: string[];
@@ -370,7 +391,7 @@ export async function launch(options: LaunchOptions): Promise<void> {
     const e = err as NodeJS.ErrnoException;
     if (e.code === 'EADDRINUSE') {
       console.error(chalk.red(`\n  Port ${options.port ?? DEFAULT_PORT} is already in use.`));
-      console.error(chalk.gray(`  Stop the other program, or try: llm-usage-analyzer --port ${(options.port ?? DEFAULT_PORT) + 1}\n`));
+      console.error(chalk.gray(`  Stop the other program, or try: ${options.retryCommand ?? 'llm-usage-analyzer'} --port ${(options.port ?? DEFAULT_PORT) + 1}\n`));
     } else {
       console.error(chalk.red(`\n  Could not start the server: ${e.message}\n`));
     }
@@ -413,8 +434,8 @@ const collect = (value: string, previous: string[] = []) => [...previous, value]
 
 export const serveCommand = new Command('serve')
   .description('Start the local server without opening a browser (for developing the dashboard)')
-  .option('-p, --port <number>', `Port to listen on (default: ${DEFAULT_PORT})`, (v) => parseInt(v, 10))
-  .option('-d, --days <number>', 'Only include the last N days', (v) => parseInt(v, 10))
+  .option('-p, --port <number>', `Port to listen on (default: ${DEFAULT_PORT})`, wholeNumber)
+  .option('-d, --days <number>', 'Only include the last N days', wholeNumber)
   .option('--origin <url>', 'Advanced: extra dashboard address allowed to read data (repeatable)', collect, [])
   .action(async (options: { port?: number; days?: number; origin: string[] }) => {
     const origins: string[] = [];
@@ -426,5 +447,5 @@ export const serveCommand = new Command('serve')
       }
       origins.push(clean);
     }
-    await launch({ port: options.port ?? DEFAULT_PORT, days: options.days, origins, devOrigins: true, open: false });
+    await launch({ port: options.port ?? DEFAULT_PORT, days: options.days, origins, devOrigins: true, open: false, retryCommand: 'llm-usage-analyzer serve' });
   });

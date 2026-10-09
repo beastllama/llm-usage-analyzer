@@ -4,6 +4,7 @@ import { isUsageReport } from './fileImport';
 import { formatDate } from './format';
 
 const HISTORY_KEY = 'llm_usage_history';
+const UNREADABLE_KEY = `${HISTORY_KEY}_unreadable`;
 const MAX_HISTORY_ITEMS = 50;
 
 let counter = 0;
@@ -17,8 +18,8 @@ function isStoredReport(value: unknown): value is StoredReport {
   const r = value as Partial<StoredReport> | null;
   return Boolean(
     r && typeof r === 'object' &&
-    typeof r.id === 'string' && typeof r.savedAt === 'string' && typeof r.name === 'string' &&
-    isUsageReport(r.report),
+    typeof r.id === 'string' && typeof r.savedAt === 'string' && !Number.isNaN(Date.parse(r.savedAt)) &&
+    typeof r.name === 'string' && isUsageReport(r.report),
   );
 }
 
@@ -29,10 +30,11 @@ export const storageService = {
     if (!raw) return [];
     try {
       const parsed: unknown = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed.filter(isStoredReport) : [];
+      // The list is capped when it is saved, but a hand-edited or older list may be longer
+      return Array.isArray(parsed) ? parsed.filter(isStoredReport).slice(0, MAX_HISTORY_ITEMS) : [];
     } catch {
       // Keep the unreadable copy so it is not silently overwritten on the next save
-      safeLocal.set(`${HISTORY_KEY}_unreadable`, raw);
+      safeLocal.set(UNREADABLE_KEY, raw);
       safeLocal.remove(HISTORY_KEY);
       return [];
     }
@@ -69,8 +71,23 @@ export const storageService = {
     return this.setReports(this.getReports().filter((r) => r.id !== id));
   },
 
+  /**
+   * Put deleted reports back (for Undo). Only these reports are added, to the list as it is now, so anything saved
+   * since the delete stays. Reports already in the list are not added twice.
+   */
+  restoreReports(entries: StoredReport[]): boolean {
+    const current = this.getReports();
+    const have = new Set(current.map((r) => r.id));
+    const merged = [...current, ...entries.filter((e) => !have.has(e.id))]
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+      .slice(0, MAX_HISTORY_ITEMS);
+    return this.setReports(merged);
+  },
+
+  /** Remove every saved report, and the damaged copy that was set aside earlier. */
   clearHistory(): void {
     safeLocal.remove(HISTORY_KEY);
+    safeLocal.remove(UNREADABLE_KEY);
   },
 
   /** "Sep 1, 2026 to Sep 15, 2026". Two reports from the same month still get different names. */

@@ -412,3 +412,64 @@ test('the Haiku 5.5 long-prompt line is exact: 100,000 prompt tokens is still th
   assert.equal(normal.input, 99_999 + 100_000 + 1, 'a, b and e stay at the normal rate');
   assert.equal(long.input, 100_001 + 40_000, 'c and d are over 100,000');
 });
+
+// ---- Strange logs (from the security review) ----
+
+test('a count above any real request is treated as damaged, so a total can never become Infinity', async () => {
+  writeTranscript('s1.jsonl', [
+    reply('big1', local(10, 1, 10, 0), 'claude-sonnet-5-5', { input_tokens: 1e308, output_tokens: 5 }),
+    reply('big2', local(10, 1, 10, 1), 'claude-sonnet-5-5', { input_tokens: 1e308, output_tokens: 5 }),
+    reply('big3', local(10, 1, 10, 2), 'claude-sonnet-5-5', { input_tokens: 1e300, output_tokens: 5, cache_read_input_tokens: 5e9 }),
+    reply('ok', local(10, 1, 10, 3), 'claude-sonnet-5-5', { input_tokens: 1_000_000_000, output_tokens: 7 }),
+  ]);
+  const { report } = await scanClaudeUsage({});
+  assert.ok(Number.isFinite(report.usage.tokens.input));
+  assert.equal(report.usage.tokens.input, 1_000_000_000, 'only the believable count is kept, and a billion is still believable');
+  assert.equal(report.usage.tokens.output, 5 + 5 + 5 + 7);
+  assert.equal(JSON.parse(JSON.stringify(report)).usage.tokens.input, 1_000_000_000, 'and it survives being written as JSON');
+});
+
+test('a model name that is far too long is cut, and the saved day does not carry it', async () => {
+  writeTranscript('s1.jsonl', [reply('long', local(10, 1), 'claude-' + 'x'.repeat(2_000_000), { input_tokens: 5, output_tokens: 5 })]);
+  const { report, dayDetail } = await scanClaudeUsage({});
+  const names = Object.keys(report.usage.tokens.by_model);
+  assert.equal(names.length, 1);
+  assert.ok(names[0].length <= 100);
+  assert.ok(Object.keys(Object.values(dayDetail)[0].by_model)[0].length <= 100);
+});
+
+test('only a model the price table knows as Haiku 5.5 is moved to the long-prompt rate', async () => {
+  const haiku = (id: string, model: string, input: number) => reply(id, local(10, 1), model, { input_tokens: input, output_tokens: 1 });
+  writeTranscript('s1.jsonl', [
+    haiku('a', 'claude-haiku-5-5', 200_000),
+    haiku('b', 'claude-haiku-5-5-20260315', 200_000),
+    haiku('c', 'claude-haiku-5-5-foo', 200_000),       // a name that only starts the same: no price, no guess
+    haiku('d', 'claude-haiku-5-55', 200_000),
+    haiku('e', 'claude-haiku-5-5-foo', 1_000),
+  ]);
+  const { report } = await scanClaudeUsage({});
+  const by = report.usage.tokens.by_model;
+  assert.equal(by['claude-haiku-5-5-long-prompt'].input, 400_000, 'the two real Haiku 5.5 ids');
+  assert.equal(by['claude-haiku-5-5-foo'].input, 201_000, 'the unknown name stays as it is, whatever the prompt size');
+  assert.equal(by['claude-haiku-5-55'].input, 200_000);
+});
+
+test('file and folder names are cleaned before they are kept as messages', async () => {
+  const dirName = 'bad\u001b]0;PWNED\u0007name';
+  fs.mkdirSync(path.join(dir, 'projects', dirName), { recursive: true });
+  // A "transcript" that is a folder cannot be read as a file, which produces an error message with its name in it
+  fs.mkdirSync(path.join(dir, 'projects', dirName, 'x.jsonl'));
+  fs.writeFileSync(path.join(dir, 'projects', dirName, 'good.jsonl'), '');
+  const { progress } = await scanClaudeUsage({});
+  for (const message of progress.errors) assert.ok(!/[\u0000-\u001f\u007f-\u009f]/.test(message), JSON.stringify(message));
+});
+
+test('a link inside the projects folder is not followed, and the scan says it skipped one', async () => {
+  const outside = path.join(dir, 'outside');
+  fs.mkdirSync(outside);
+  fs.writeFileSync(path.join(outside, 'secret.jsonl'), JSON.stringify({ message: { id: 'z', model: 'claude-sonnet-5-5', usage: { input_tokens: 99, output_tokens: 1 } } }) + '\n');
+  try { fs.symlinkSync(outside, path.join(dir, 'projects', 'link-to-outside')); } catch { return; }
+  const { report, progress } = await scanClaudeUsage({});
+  assert.equal(report.usage.messages.count, 0, 'what is behind the link is not counted');
+  assert.ok(progress.errors.some((e) => /Skipped a link, not counted/.test(e)));
+});

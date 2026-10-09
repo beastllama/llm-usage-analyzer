@@ -127,3 +127,55 @@ test('deleting one report leaves the others, and clearing removes all', () => {
   storageService.clearHistory();
   assert.deepEqual(storageService.getReports(), []);
 });
+
+test('Undo puts back only the deleted reports and keeps what was saved in the meantime', () => {
+  const a = storageService.saveReport(report('2026-08-01T00:00:00.000Z', '2026-08-15T00:00:00.000Z'));
+  const b = storageService.saveReport(report('2026-09-01T00:00:00.000Z', '2026-09-15T00:00:00.000Z'));
+  assert.ok(a && b);
+  const deleted = [b];
+  storageService.deleteReport(b.id);
+  // A new report is saved before Undo is pressed
+  const c = storageService.saveReport(report('2026-10-01T00:00:00.000Z', '2026-10-09T00:00:00.000Z'));
+  assert.ok(c);
+  assert.equal(storageService.restoreReports(deleted), true);
+  assert.deepEqual(storageService.getReports().map((r) => r.id).sort(), [a.id, b.id, c.id].sort());
+  // and pressing it again changes nothing
+  storageService.restoreReports(deleted);
+  assert.equal(storageService.getReports().length, 3);
+});
+
+test('Undo restores several deleted reports, newest first', () => {
+  const made = [1, 2, 3].map((n) => storageService.saveReport(report(`2026-0${n}-01T00:00:00.000Z`, `2026-0${n}-09T00:00:00.000Z`))!);
+  const [first, second, third] = made;
+  storageService.deleteReport(second.id);
+  storageService.deleteReport(third.id);
+  assert.equal(storageService.getReports().length, 1);
+  storageService.restoreReports([second, third]);
+  const ids = storageService.getReports().map((r) => r.id);
+  assert.equal(ids.length, 3);
+  assert.ok(ids.includes(first.id) && ids.includes(second.id) && ids.includes(third.id));
+});
+
+test('an entry whose saved time is not a date is left out of the list', () => {
+  const good = storageService.saveReport(report('2026-09-01T00:00:00.000Z', '2026-09-02T00:00:00.000Z'));
+  const list = JSON.parse(store.getItem('llm_usage_history')!);
+  list.push({ id: 'bad-time', savedAt: 'yesterday-ish', name: 'x', report: clone(MOCK_DATA) });
+  store.setItem('llm_usage_history', JSON.stringify(list));
+  assert.deepEqual(storageService.getReports().map((r) => r.id), [good!.id]);
+});
+
+test('a list longer than 50 is cut to 50 when it is read', () => {
+  const entries = Array.from({ length: 80 }, (_, i) => ({
+    id: `id-${i}`, savedAt: new Date(2026, 0, 1, 0, i).toISOString(), name: `r${i}`, report: clone(MOCK_DATA),
+  }));
+  store.setItem('llm_usage_history', JSON.stringify(entries));
+  assert.equal(storageService.getReports().length, 50);
+});
+
+test('clearing the list also removes the damaged copy that was set aside', () => {
+  store.setItem('llm_usage_history', '{broken');
+  storageService.getReports();
+  assert.equal(store.getItem('llm_usage_history_unreadable'), '{broken');
+  storageService.clearHistory();
+  assert.equal(store.getItem('llm_usage_history_unreadable'), null);
+});

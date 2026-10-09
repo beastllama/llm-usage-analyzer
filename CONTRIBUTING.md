@@ -49,16 +49,16 @@ CI runs the same checks on every pull request.
 
 Publishing is done by hand from your own computer. No GitHub Actions, no stored token.
 
-1. Raise `version` in `packages/cli/package.json`. Merge to `main`.
+1. Check `version` in `packages/cli/package.json`. The first release is already 1.2.0, so it needs no change. For a later release, raise it, and merge to `main`.
 2. `git checkout main && git pull && npm install`
 3. `npm login` (once; npm asks for your 2FA code)
 4. `npm run release:rehearse` runs every check and a dry-run publish. Nothing is uploaded.
 5. `npm run release` runs the same checks, asks you to type the version to confirm, then publishes (npm asks for your 2FA code).
-6. Mark the release: `git tag v1.2.1 && git push origin v1.2.1` (the script prints the exact line).
+6. Mark the release with a git tag. The script prints the two commands (for 1.2.0: `git tag v1.2.0`, then `git push origin v1.2.0`).
 
 The script stops at the first problem and says what to do. It checks, in order: you are on `main`, with nothing uncommitted, the same as GitHub; the version is new on npm; install, types, tests; build; the exact list of files in the package; and that the packed file installs in a throwaway folder and starts.
 
-Dependencies of the command are pinned in `packages/cli/npm-shrinkwrap.json`, and it ships in the package. To update them: `cd packages/cli && npm update`, run the checks, commit the changed `npm-shrinkwrap.json`.
+The package ships `npm-shrinkwrap.json`: the exact version of each package the command needs when it runs (no build tools). It is made from `packages/cli/package-lock.json` when the package is packed (`packages/cli/scripts/prepack.mjs`), and removed again afterwards, so it is never committed. To update dependencies: `cd packages/cli && npm update`, run the checks, commit the changed `package-lock.json`.
 
 The demo site is a Vercel project linked to this repo. It redeploys on every push to `main`.
 

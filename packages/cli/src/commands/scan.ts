@@ -14,13 +14,14 @@ import { historyFile } from '../history.js';
 import { costByModel } from '../pricing.js';
 import { estimateQuality } from '../estimate.js';
 import { insideGitRepo, plain, writePrivateFile } from '../fsafe.js';
+import { wholeNumber } from '../args.js';
 import type { ScanOptions } from '../types.js';
 
 const money = (n: number) => (n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`);
 
 export const scanCommand = new Command('scan')
   .description('Scan Claude Code local data and write usage_report.json')
-  .option('-d, --days <number>', 'Only include the last N days', (v) => parseInt(v, 10))
+  .option('-d, --days <number>', 'Only include the last N days', wholeNumber)
   .option('--start-date <date>', 'Start date (YYYY-MM-DD)')
   .option('--end-date <date>', 'End date (YYYY-MM-DD, included)')
   .option('-o, --output <file>', 'Output file path (default: usage_report.json)')
@@ -48,8 +49,10 @@ export const scanCommand = new Command('scan')
     }
 
     if (options.json) {
-      const { report, historyWarning } = await buildReport({ ...options, save: options.save !== false });
-      if (historyWarning) console.error(historyWarning);
+      const { report, historyWarning, historySaveError } = await buildReport({ ...options, save: options.save !== false });
+      // The report goes to stdout. Anything else goes to stderr, so a pipe gets clean JSON.
+      if (historyWarning) console.error(plain(historyWarning));
+      if (historySaveError) console.error(`Could not save your history (${plain(historySaveError)}). This scan still worked.`);
       console.log(JSON.stringify(report, null, 2));
       return;
     }
@@ -72,14 +75,15 @@ export const scanCommand = new Command('scan')
     spinner.stop();
 
     if (historyWarning) {
-      console.log(chalk.yellow(`⚠️  ${historyWarning}`));
+      console.log(chalk.yellow(`⚠️  ${plain(historyWarning)}`));
     }
     if (historySaveError) {
-      console.log(chalk.yellow(`⚠️  Could not save your history (${historySaveError}). This scan still worked. Use --no-save to hide this.`));
+      console.log(chalk.yellow(`⚠️  Could not save your history (${plain(historySaveError)}). This scan still worked. Use --no-save to hide this.`));
     }
     if (options.verbose && progress.errors.length > 0) {
       console.log(chalk.yellow('⚠️  Some files were skipped:'));
-      progress.errors.slice(0, 5).forEach((err) => console.log(chalk.gray(`   ${err}`)));
+      // File and folder names come from the disk, so they are cleaned before they reach the terminal
+      progress.errors.slice(0, 5).forEach((err) => console.log(chalk.gray(`   ${plain(err).slice(0, 300)}`)));
       if (progress.errors.length > 5) console.log(chalk.gray(`   …and ${progress.errors.length - 5} more`));
       console.log('');
     }
@@ -122,7 +126,7 @@ export const scanCommand = new Command('scan')
       if (quality.lowerBound) console.log(chalk.yellow('   So the cost above is a minimum. The real cost is higher.'));
     }
     if (unpricedModels.length > 0) {
-      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.map(plain).join(', ')} (left out of the cost)`));
+      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.map((m) => plain(m).slice(0, 80)).join(', ')} (left out of the cost)`));
     }
 
     const outputPath = path.resolve(options.output || 'usage_report.json');
@@ -136,15 +140,17 @@ export const scanCommand = new Command('scan')
       // File does not exist yet, which is fine
     }
 
+    // The report is personal. Say so before it is written into a folder that is under git.
+    if (insideGitRepo(path.dirname(outputPath))) {
+      console.log(chalk.yellow('\n   The report is about to be written into a git repository. It is personal, so do not commit it.'));
+    }
+
     // Personal data, so only the owner can read it
     writePrivateFile(outputPath, JSON.stringify(report, null, 2));
 
     console.log('');
     console.log(chalk.gray('   ' + '─'.repeat(40)));
-    console.log(chalk.green(`   📄 Saved: ${outputPath}`));
-    if (insideGitRepo(path.dirname(outputPath))) {
-      console.log(chalk.yellow('   This folder is a git repository. The report is personal, so do not commit it.'));
-    }
+    console.log(chalk.green(`   📄 Saved: ${plain(outputPath)}`));
     if (options.save !== false) {
       console.log(chalk.gray(`   🗂  History: ${historyFile()}`));
     }

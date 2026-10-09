@@ -23,12 +23,27 @@ export function writePrivateFile(file: string, data: string): void {
   }
 }
 
+/**
+ * Make this tool's own data folder (~/.llm-usage) readable by its owner only, even when it already exists with
+ * looser rights. Only for a folder this tool owns: never call it on a folder the user chose.
+ */
+export function ensurePrivateFolder(dir: string): void {
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch {
+    // Not ours to change (another owner, or a system that has no such rights): the files inside are private anyway
+  }
+}
+
 /** Append a line to a private file, and refuse to follow a link someone planted in its place. */
 export function appendPrivateLine(file: string, line: string): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  ensurePrivateFolder(path.dirname(file));
   const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | (fs.constants.O_NOFOLLOW ?? 0);
   const fd = fs.openSync(file, flags, 0o600);
   try {
+    // A file made by an older version may be open to others. This one is ours, so it is made private.
+    try { fs.fchmodSync(fd, 0o600); } catch { /* nothing more to do */ }
     fs.writeSync(fd, line);
   } finally {
     fs.closeSync(fd);

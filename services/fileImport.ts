@@ -1,20 +1,36 @@
 import { UsageReport } from '../types';
-import { PLANS, PlanKey } from './pricing';
 
-export const MAX_FILE_BYTES = 50 * 1024 * 1024;
+/**
+ * The biggest file this page opens. A file is read as text and parsed, which takes about twice its size in memory
+ * (measured: a 200 MB chat export parses in under a second and peaks near 500 MB). Past this size a tab could run out of memory.
+ */
+export const MAX_FILE_BYTES = 200 * 1024 * 1024;
+const MAX_MB = MAX_FILE_BYTES / (1024 * 1024);
+
+/** A ZIP file starts with these four characters. Exports arrive zipped, so choosing the ZIP itself is a common slip. */
+export const ZIP_SIGNATURE = 'PK\u0003\u0004';
+
+export const ZIP_MESSAGE = "That's a ZIP file. Unzip it first, then choose conversations.json.";
+export const TOO_BIG_MESSAGE =
+  `That file is over ${MAX_MB} MB, which is more than this page can open. If you use Claude Code, \`npx llm-usage-analyzer\` reads your history without a file.`;
 
 /** The model label used for claude.ai exports, which have no model names or token counts. */
 export const ESTIMATED_MODEL = 'Claude (estimated)';
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
+const PROVIDERS: string[] = ['anthropic', 'openai', 'google', 'xai', 'other'];
+const SOURCES: string[] = ['local_agent', 'browser_extension', 'api', 'manual_upload', 'demo', 'manual_entry'];
+const PLAN_TYPES: string[] = ['subscription', 'payg'];
 
 /** Local calendar day as YYYY-MM-DD, the same meaning the CLI uses. */
 const localDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
-/** A real number of 0 or more. Text, NaN, Infinity and negatives are not. */
-const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+/** The largest count that is believable (a quadrillion). Anything above is a damaged or invented file. */
+const MAX_COUNT = 1e15;
+/** A real number from 0 to a quadrillion. Text, NaN, Infinity, negatives and absurd sizes are not. */
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= MAX_COUNT;
 const isOptionalCount = (v: unknown): boolean => v === undefined || isCount(v);
 
 /**
@@ -22,12 +38,16 @@ const isOptionalCount = (v: unknown): boolean => v === undefined || isCount(v);
  * is turned away here and not while a screen is drawing.
  */
 export function isUsageReport(json: unknown): json is UsageReport {
-  if (!isObject(json) || typeof json.provider !== 'string') return false;
+  if (!isObject(json) || typeof json.provider !== 'string' || !PROVIDERS.includes(json.provider)) return false;
+  if (typeof json.source !== 'string' || !SOURCES.includes(json.source)) return false;
 
   const { period, plan, usage } = json;
   if (!isObject(period) || typeof period.start !== 'string' || typeof period.end !== 'string') return false;
-  if (Number.isNaN(Date.parse(period.start)) || Number.isNaN(Date.parse(period.end))) return false;
-  if (!isObject(plan) || typeof plan.name !== 'string' || !isCount(plan.price_usd)) return false;
+  const start = Date.parse(period.start);
+  const end = Date.parse(period.end);
+  // A period that runs backwards would be read as one day, and the monthly cost multiplied by 30
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end) return false;
+  if (!isObject(plan) || typeof plan.name !== 'string' || !isCount(plan.price_usd) || !PLAN_TYPES.includes(plan.type as string)) return false;
   if (!isObject(usage) || !isObject(usage.tokens) || !isObject(usage.messages) || !isObject(usage.sessions)) return false;
 
   const { tokens, messages, sessions } = usage;
@@ -39,9 +59,13 @@ export function isUsageReport(json: unknown): json is UsageReport {
   }
 
   if (!isCount(messages.count) || !isOptionalCount(messages.unfinished) || !Array.isArray(messages.by_day)) return false;
+  let previousDay = '';
   for (const d of messages.by_day) {
     if (!isObject(d) || typeof d.date !== 'string' || !DAY_KEY.test(d.date)) return false;
     if (!isCount(d.count) || !isCount(d.input) || !isCount(d.output)) return false;
+    // Days in order, each once: the charts and the Trends rely on it
+    if (d.date <= previousDay) return false;
+    previousDay = d.date;
   }
   return isCount(sessions.count);
 }
@@ -72,12 +96,13 @@ const estimateTokens = (text: string) => Math.ceil(text.length / 4);
  * text length (4 characters each) and a cost cannot be worked out.
  * A reply is one assistant message, the same meaning the CLI uses.
  */
-export function convertClaudeExport(data: unknown[], plan: PlanKey): UsageReport {
+export function convertClaudeExport(data: unknown[]): UsageReport {
   const usage: UsageReport = {
     provider: 'anthropic',
     source: 'manual_upload',
     period: { start: new Date().toISOString(), end: new Date().toISOString() },
-    plan: { name: plan, price_usd: PLANS[plan].price, type: 'subscription' },
+    // A chat export says nothing about the plan, so none is claimed. The plan is chosen on the screen.
+    plan: { name: 'Not set', price_usd: 0, type: 'subscription' },
     usage: {
       tokens: { input: 0, output: 0, cached: 0, by_model: {} },
       messages: { count: 0, by_day: [] },
@@ -139,14 +164,10 @@ export function convertClaudeExport(data: unknown[], plan: PlanKey): UsageReport
 export type ImportResult = { ok: true; report: UsageReport } | { ok: false; error: string };
 
 /** Turn the text of a dropped file into a report, or say plainly what is wrong with it. */
-export function parseUsageFile(text: string, size: number, plan: PlanKey): ImportResult {
-  if (size > MAX_FILE_BYTES) {
-    return { ok: false, error: 'That file is over 50 MB. Export a shorter date range, or use the command line.' };
-  }
-  // A ZIP starts with "PK". Exports arrive zipped, so this is a common slip.
-  if (text.startsWith('PK\u0003\u0004')) {
-    return { ok: false, error: "That's a ZIP file. Unzip it first, then choose conversations.json." };
-  }
+export function parseUsageFile(text: string, size: number): ImportResult {
+  // A ZIP is named as one, whatever its size: a big export ZIP should get the "unzip it" hint, not "too big"
+  if (text.startsWith(ZIP_SIGNATURE)) return { ok: false, error: ZIP_MESSAGE };
+  if (size > MAX_FILE_BYTES) return { ok: false, error: TOO_BIG_MESSAGE };
 
   let json: unknown;
   try {
@@ -158,7 +179,7 @@ export function parseUsageFile(text: string, size: number, plan: PlanKey): Impor
   if (isUsageReport(json)) return { ok: true, report: json };
 
   if (Array.isArray(json) && json.some((c) => isObject(c) && (c.uuid || c.chat_messages))) {
-    const report = convertClaudeExport(json, plan);
+    const report = convertClaudeExport(json);
     if (report.usage.messages.count === 0) {
       return { ok: false, error: 'No chats in that file. Look for conversations.json in the unzipped folder.' };
     }

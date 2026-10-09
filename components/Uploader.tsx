@@ -4,7 +4,7 @@ import {
   Copy, Check, ExternalLink, Loader2, ShieldCheck, Download, BarChart3,
 } from 'lucide-react';
 import { UsageReport } from '../types';
-import { parseUsageFile, MAX_FILE_BYTES } from '../services/fileImport';
+import { parseUsageFile, MAX_FILE_BYTES, ZIP_MESSAGE, ZIP_SIGNATURE, TOO_BIG_MESSAGE } from '../services/fileImport';
 import { copyText } from '../services/shareService';
 import { fetchLocalUsage, localServerIsUp, servedByCli, pageIsLocal } from '../services/localServer';
 
@@ -20,19 +20,31 @@ interface UploaderProps {
   onLoadDemo: () => void;
   /** A message to show on arrival, for example when the local history could not be read. */
   initialNotice?: StartNotice | null;
+  /** Move focus to the heading on arrival. Used when the person came back to this screen, so a screen reader starts at the top. */
+  focusHeading?: boolean;
 }
 
 type ViewState = 'main' | 'web' | 'file';
 
-const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNotice = null }) => {
+const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNotice = null, focusHeading = false }) => {
   const [view, setView] = useState<ViewState>('main');
   const [notice, setNotice] = useState<StartNotice | null>(initialNotice);
   const [dragActive, setDragActive] = useState(false);
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null);
   const [serverFound, setServerFound] = useState(false);
   const [serverLoading, setServerLoading] = useState(false);
+  // A big file takes a moment to read, so the screen says so
+  const [readingFile, setReadingFile] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    if (!focusHeading) return;
+    window.scrollTo(0, 0);
+    headingRef.current?.focus({ preventScroll: true });
+    // Only on arrival
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Dev server on this computer: if the local server is running, offer to load from it.
   // A page on a public host never probes localhost (the browser would ask the visitor for permission).
@@ -45,8 +57,26 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
 
   const processFile = async (file: File) => {
     setNotice(null);
+    setReadingFile(true);
+    try {
+      await openFile(file);
+    } finally {
+      setReadingFile(false);
+    }
+  };
+
+  const openFile = async (file: File) => {
+    // A ZIP is named as a ZIP whatever its size, so a big export ZIP gets "unzip it" and not "too big"
+    try {
+      if ((await file.slice(0, ZIP_SIGNATURE.length).text()) === ZIP_SIGNATURE) {
+        setNotice({ kind: 'error', text: ZIP_MESSAGE });
+        return;
+      }
+    } catch {
+      // Reading is tried again below, with its own message
+    }
     if (file.size > MAX_FILE_BYTES) {
-      setNotice({ kind: 'error', text: 'That file is over 50 MB. Export a shorter date range, or use the command line.' });
+      setNotice({ kind: 'error', text: TOO_BIG_MESSAGE });
       return;
     }
     let text: string;
@@ -56,7 +86,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       setNotice({ kind: 'error', text: "We couldn't open that file. Is it a file, and not a folder?" });
       return;
     }
-    const result = parseUsageFile(text, file.size, 'Claude Pro');
+    const result = parseUsageFile(text, file.size);
     if (result.ok === false) {
       setNotice({ kind: 'error', text: result.error });
       return;
@@ -157,6 +187,9 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       >
         Choose file
       </button>
+      <p role="status" className="text-sm text-slate-200 mt-3 min-h-5 flex items-center gap-2">
+        {readingFile && <><Loader2 className="w-4 h-4 motion-safe:animate-spin" aria-hidden="true" /> Reading your file…</>}
+      </p>
     </div>
   );
 

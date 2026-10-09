@@ -7,12 +7,14 @@ import { TrendingUp, TrendingDown, Calendar, Coins, MessageSquare, Cpu, ArrowLef
 import { StoredReport } from '../types';
 import {
   analyzeUsageTrends,
-  getDailyBreakdown,
+  getRecentDays,
   getWeekdayHeatmap,
   getModelDistribution,
   formatMonth,
+  MIN_DAYS_TO_COMPARE,
 } from '../services/trendService';
-import { formatApproxUsd, formatDay, formatTokenNumber, formatUsd } from '../services/format';
+import { formatApproxUsd, formatAtLeastUsd, formatDay, formatTokenNumber, formatUsd, plural } from '../services/format';
+import { CHART_START_SIZE } from './chartSize';
 
 interface HistoryViewProps {
   reports: StoredReport[];
@@ -24,7 +26,7 @@ const TOOLTIP_STYLE = { backgroundColor: '#1e293b', border: '1px solid #334155',
 
 const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
   const trends = useMemo(() => analyzeUsageTrends(reports), [reports]);
-  const dailyData = useMemo(() => getDailyBreakdown(reports), [reports]);
+  const recentDays = useMemo(() => getRecentDays(reports, 30), [reports]);
   const weekdayData = useMemo(() => getWeekdayHeatmap(reports), [reports]);
   const modelData = useMemo(() => getModelDistribution(reports), [reports]);
   const headingRef = useRef<HTMLHeadingElement>(null);
@@ -41,7 +43,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
         <div className="bg-slate-800/40 rounded-2xl border border-white/10 p-12">
           <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-4" aria-hidden="true" />
           <h1 ref={headingRef} tabIndex={-1} className="text-xl font-bold text-white mb-2 outline-none">No trend to show yet</h1>
-          <p className="text-slate-200 mb-6">Open reports from two or more months.</p>
+          <p className="text-slate-200 mb-6">Trends need saved Claude Code reports with prices. A claude.ai chat export has none.</p>
           <button
             onClick={onBack}
             className="px-6 min-h-11 bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg font-medium transition-colors"
@@ -58,6 +60,9 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
   const isGrowth = (change ?? 0) > 0;
   const monthly = trends.projectedMonthlyCost;
   const notPriced = monthly === 0 && trends.hasUnpriced;
+  const minimum = trends.lowerBound;
+  /** A cost figure for a card: "at least" (rounded down) when only a minimum is known. */
+  const money = (n: number, exact = false) => (minimum ? `At least ${formatAtLeastUsd(n)}` : exact ? formatUsd(n) : formatApproxUsd(n));
 
   return (
     <div className="max-w-7xl mx-auto py-8 px-4">
@@ -73,8 +78,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
         <div>
           <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-bold text-white outline-none">Trends</h1>
           <p className="text-slate-300 text-sm">
-            Using {trends.reportsUsed} of {reports.length} saved report{reports.length !== 1 ? 's' : ''}.
-            {trends.reportsUsed < reports.length ? ' A report that overlaps a newer one is skipped, so no day counts twice.' : ''}
+            Using {trends.reportsUsed} of {plural(reports.length, 'saved report')}.
+            {trends.reportsUsed < reports.length ? ' Chat exports have no prices, and a report that overlaps a newer one is skipped, so no day counts twice.' : ''}
           </p>
         </div>
       </div>
@@ -86,10 +91,12 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
             <Coins className="w-4 h-4" aria-hidden="true" />
             Pay-as-you-go per month
           </div>
-          <div className="text-2xl font-bold text-white">{notPriced ? 'Not priced' : formatApproxUsd(monthly)}</div>
+          <div className="text-2xl font-bold text-white">{notPriced ? 'Not priced' : money(monthly)}</div>
           <div className="text-xs text-slate-300 mt-1">
-            An estimate at list prices, from your average day. Costs are spread across days by token count.
-            {trends.hasUnpriced && !notPriced ? ' Some usage has no known price and is left out.' : ''}
+            {minimum
+              ? 'A minimum at list prices: some replies were cut short in the log, or some usage has no known price, so the real cost is higher.'
+              : 'An estimate at list prices, from your average day.'}
+            {' '}Costs are spread across days by token count.
           </div>
         </div>
 
@@ -104,7 +111,9 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
             <>
               <div className="text-2xl font-bold text-slate-300">—</div>
               <div className="text-xs text-slate-300 mt-1">
-                {trends.data.length < 2 ? 'Needs two months of data.' : 'The latest month has under 20 active days, so it is not compared yet.'}
+                {trends.data.length < 2
+                  ? 'Needs two months of data.'
+                  : `Compared only when both months have at least ${MIN_DAYS_TO_COMPARE} active days, and follow each other.`}
               </div>
             </>
           ) : (
@@ -112,7 +121,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
               <div className={`text-2xl font-bold ${isGrowth ? 'text-red-300' : 'text-green-300'}`}>
                 {isGrowth ? '+' : ''}{change.toFixed(1)}%
               </div>
-              <div className="text-xs text-slate-300 mt-1">Pay-as-you-go cost, compared with the month before</div>
+              <div className="text-xs text-slate-300 mt-1">{minimum ? 'Minimum pay-as-you-go cost' : 'Pay-as-you-go cost'}, compared with the month before</div>
             </>
           )}
         </div>
@@ -122,7 +131,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
             <MessageSquare className="w-4 h-4" aria-hidden="true" />
             Average day
           </div>
-          <div className="text-2xl font-bold text-white">{notPriced ? 'Not priced' : formatUsd(trends.avgDailyCost)}</div>
+          <div className="text-2xl font-bold text-white">{notPriced ? 'Not priced' : money(trends.avgDailyCost, true)}</div>
           <div className="text-xs text-slate-300 mt-1">Pay-as-you-go, across every calendar day</div>
         </div>
 
@@ -139,9 +148,9 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-slate-800/40 rounded-xl border border-white/10 p-6">
-          <h2 className="text-lg font-semibold text-white mb-4">Pay-as-you-go cost by month</h2>
+          <h2 className="text-lg font-semibold text-white mb-4">Pay-as-you-go cost by month{minimum ? ' (a minimum)' : ''}</h2>
           <div className="h-64" role="img" aria-label="Line chart of the pay-as-you-go cost for each month">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
               <LineChart data={trends.data.map((d) => ({ ...d, month: formatMonth(d.period) }))} accessibilityLayer={false}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                 <XAxis dataKey="month" stroke="#cbd5e1" fontSize={12} />
@@ -149,7 +158,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
                   labelStyle={{ color: '#f1f5f9' }}
-                  formatter={(value: number) => [formatUsd(value), 'Cost']}
+                  formatter={(value: number) => [formatUsd(value), minimum ? 'Cost (at least)' : 'Cost']}
                 />
                 <Line type="monotone" dataKey="totalCost" stroke="#818cf8" strokeWidth={3} dot={{ fill: '#818cf8', strokeWidth: 2 }} isAnimationActive={false} />
               </LineChart>
@@ -158,10 +167,10 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
         </div>
 
         <div className="bg-slate-800/40 rounded-xl border border-white/10 p-6">
-          <h2 className="text-lg font-semibold text-white mb-4">Tokens per day (last 30 days)</h2>
-          <div className="h-64" role="img" aria-label="Bar chart of tokens per day">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={dailyData.slice(-30)} accessibilityLayer={false}>
+          <h2 className="text-lg font-semibold text-white mb-4">Tokens per day (the last 30 days)</h2>
+          <div className="h-64" role="img" aria-label="Bar chart of tokens per day for the last 30 days">
+            <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
+              <BarChart data={recentDays} accessibilityLayer={false}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                 <XAxis dataKey="date" stroke="#cbd5e1" fontSize={10} tickFormatter={(d: string) => formatDay(d)} />
                 <YAxis stroke="#cbd5e1" fontSize={12} tickFormatter={(v) => formatTokenNumber(v)} />
@@ -181,7 +190,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
           <h2 className="text-lg font-semibold text-white mb-4">Models</h2>
           <div className="flex flex-col sm:flex-row sm:items-center gap-4">
             <div className="h-56 w-full sm:w-1/2" role="img" aria-label={`Pie chart of tokens by model. ${modelData.slice(0, 5).map((m) => `${m.model} ${m.percentage.toFixed(0)}%`).join(', ')}`}>
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
                 <PieChart accessibilityLayer={false}>
                   <Pie data={modelData} cx="50%" cy="50%" innerRadius={50} outerRadius={80} dataKey="tokens" paddingAngle={2} isAnimationActive={false}>
                     {modelData.map((entry, index) => (
@@ -207,7 +216,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
         <div className="bg-slate-800/40 rounded-xl border border-white/10 p-6">
           <h2 className="text-lg font-semibold text-white mb-4">Average tokens by day of the week</h2>
           <div className="h-64" role="img" aria-label="Bar chart of average tokens for each day of the week">
-            <ResponsiveContainer width="100%" height="100%">
+            <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
               <BarChart data={weekdayData} accessibilityLayer={false}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                 <XAxis dataKey="day" stroke="#cbd5e1" fontSize={12} tickFormatter={(d) => d.slice(0, 3)} />

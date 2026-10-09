@@ -36,3 +36,33 @@ html {
 body {
   background: #0b0c15;
 }
+
+/* A long unbroken name (a model id, a file name) wraps instead of pushing the page sideways on a phone */
+main {
+  overflow-wrap: anywhere;
+}
+
+/*
+  The page is dark, so printing it as it is gives white text on white paper. When someone prints the page itself
+  (the "Print or save as PDF" item opens a proper print page), show dark text on white and hide the controls.
+*/
+@media print {
+  html,
+  body {
+    background: #fff !important;
+  }
+  body * {
+    color: #111 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+  .recharts-text {
+    fill: #111 !important;
+  }
+  nav,
+  button,
+  [role='status'],
+  .fixed {
+    display: none !important;
+  }
+}

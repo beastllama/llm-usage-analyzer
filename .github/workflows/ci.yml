@@ -13,8 +13,8 @@ jobs:
     name: Web app (typecheck, test, build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -34,12 +34,12 @@ jobs:
       run:
         working-directory: packages/cli
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: packages/cli/npm-shrinkwrap.json
+          cache-dependency-path: packages/cli/package-lock.json
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
@@ -49,8 +49,8 @@ jobs:
     name: Package (build the tarball the way a release does)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -77,25 +77,44 @@ jobs:
           for f in dist/index.js web/index.html web/THIRD_PARTY_NOTICES.txt README.md LICENSE package.json npm-shrinkwrap.json; do
             grep -qx "package/$f" "$RUNNER_TEMP/files.txt" || { echo "Missing from the package: $f"; exit 1; }
           done
-      - uses: actions/upload-artifact@v4
+          # The pinned list must hold what the command needs to run, and no build tools
+          tar -xzOf "$tgz" package/npm-shrinkwrap.json | node -e "
+            const lock = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+            const names = Object.keys(lock.packages).filter(Boolean);
+            const dev = names.filter((name) => lock.packages[name].dev);
+            if (dev.length) { console.error('Build tools are in the pinned list: ' + dev.join(', ')); process.exit(1); }
+            console.log(names.length + ' runtime packages are pinned');
+          "
+      - uses: actions/upload-artifact@v7
         with:
           name: tarball
           path: ${{ runner.temp }}/pack/*.tgz
           retention-days: 3
 
   smoke:
-    name: Install the tarball and run it on Node ${{ matrix.node }}
+    name: Install the tarball and run it (Node ${{ matrix.node }}, ${{ matrix.os }})
     needs: package
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    # Windows and macOS are checked too, but a failure there only reports: nobody has run this tool on them by hand yet
+    continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest]
         node: [18, 20, 22, 24]
+        include:
+          - os: windows-latest
+            node: 22
+          - os: macos-latest
+            node: 22
+    defaults:
+      run:
+        shell: bash
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ matrix.node }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: tarball
           path: ${{ runner.temp }}/pack
@@ -107,6 +126,8 @@ jobs:
           bin=./node_modules/.bin/llm-usage-analyzer
           expected=$(node -p "require('./node_modules/llm-usage-analyzer/package.json').version")
           test "$($bin --version)" = "$expected"
+          # The status line must answer quickly, and always with one line
+          test "$(echo '{"rate_limits":{"five_hour":{"used_percentage":12}}}' | $bin statusline)" = "5h 12% · 7d —"
           CLAUDE_CONFIG_DIR="$RUNNER_TEMP/none" LLM_USAGE_HOME="$RUNNER_TEMP/home" $bin --no-open --port 3555 &
           curl -sf --retry 15 --retry-connrefused --retry-delay 1 http://localhost:3555/ | grep -q 'llm-usage-server'
           curl -sf http://localhost:3555/THIRD_PARTY_NOTICES.txt | grep -q 'react@'

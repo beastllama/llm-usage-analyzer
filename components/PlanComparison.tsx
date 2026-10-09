@@ -4,7 +4,7 @@ import { UsageReport } from '../types';
 import { PLANS, PLAN_KEYS } from '../services/pricing';
 import { calculateAnalysis } from '../services/analysisService';
 import { describeCaveats } from '../services/answer';
-import { formatApproxUsd, formatUsd } from '../services/format';
+import { formatAtLeastUsd, formatUsd } from '../services/format';
 
 interface PlanComparisonProps {
   data: UsageReport;
@@ -25,13 +25,14 @@ const PlanComparison: React.FC<PlanComparisonProps> = ({ data, selectedPlan, onS
   const caveats = first ? describeCaveats(first) : [];
 
   return (
-    <section className="bg-slate-800/40 rounded-2xl border border-white/10 p-6 space-y-5" aria-labelledby="compare-title">
+    // No landmark of its own: the panel around it (in AnalysisDashboard) is the named region, so a screen reader hears one name
+    <div className="bg-slate-800/40 rounded-2xl border border-white/10 p-6 space-y-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 id="compare-title" className="text-xl font-bold text-white">Compare plans</h2>
           <p className="text-sm text-slate-200 mt-1">
             Pay-as-you-go would cost {minimum ? 'at least ' : 'about '}
-            <span className="text-white font-semibold">{minimum ? formatApproxUsd(apiMonthly) : formatUsd(apiMonthly)}/mo</span> at list prices.
+            <span className="text-white font-semibold">{minimum ? formatAtLeastUsd(apiMonthly) : formatUsd(apiMonthly)}/mo</span> at list prices.
           </p>
           {caveats.map((c) => <p key={c} className="text-sm text-amber-100 mt-1">{c}</p>)}
         </div>
@@ -49,7 +50,7 @@ const PlanComparison: React.FC<PlanComparisonProps> = ({ data, selectedPlan, onS
       <ul className="space-y-2">
         {rows.map((row) => {
           const isSelected = row.planKey === selectedPlan;
-          const gap = minimum ? formatApproxUsd(row.difference) : formatUsd(row.difference);
+          const gap = minimum ? formatAtLeastUsd(row.difference) : formatUsd(row.difference);
           const [text, tone] =
             row.verdict === 'keep' ? [`${minimum ? 'At least ' : ''}${gap} less than pay-as-you-go`, 'text-green-200'] :
             row.verdict === 'tie' ? ['About the same as pay-as-you-go', 'text-slate-100'] :
@@ -79,7 +80,7 @@ const PlanComparison: React.FC<PlanComparisonProps> = ({ data, selectedPlan, onS
       <p className="text-sm text-slate-300">
         Price only. Plans also differ in how much you can use (Pro 1x, Max 5x, Max 20x per 5-hour session). Anthropic doesn't publish exact limits.
       </p>
-    </section>
+    </div>
   );
 };
 

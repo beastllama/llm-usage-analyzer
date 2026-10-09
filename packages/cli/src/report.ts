@@ -1,6 +1,6 @@
 import type { ScanOptions, UsageReport } from './types.js';
 import { scanClaudeUsage, localDayKey, ParseProgress, DayDetail } from './parsers/claude.js';
-import { loadHistoryChecked, saveHistory, addHistoryToReport, mergeForSave } from './history.js';
+import { loadHistoryChecked, saveHistory, addHistoryToReport, mergeForSave, currentTimeZone, sameZone } from './history.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -30,10 +30,14 @@ export async function buildReport(
 
   let historyDaysAdded = 0;
   let historySaveError: string | undefined;
-  const { days: stored, warning: historyWarning } = loadHistoryChecked();
+  const loaded = loadHistoryChecked();
+  const { days: stored, warning: historyWarning } = loaded;
+  // Saved days kept on a clock in another time zone have other day boundaries than this scan
+  const zone = currentTimeZone();
+  const sameClock = sameZone(loaded.timeZone, zone);
 
   if (useHistory) {
-    historyDaysAdded = addHistoryToReport(report, dayDetail, stored);
+    historyDaysAdded = addHistoryToReport(report, dayDetail, stored, { sameZone: sameClock });
   }
 
   if (options.save) {
@@ -41,10 +45,15 @@ export async function buildReport(
     const incomplete = new Set<string>([localDayKey(new Date())]);
     if (options.days) incomplete.add(localDayKey(new Date(Date.now() - options.days * DAY_MS)));
     const complete = Object.fromEntries(Object.entries(dayDetail).filter(([day]) => !incomplete.has(day)));
-    try {
-      saveHistory(mergeForSave(stored, complete));
-    } catch (err) {
-      historySaveError = (err as Error).message;
+    if (!loaded.safeToSave) {
+      // The file is there but could not be read, so saving would replace it with a new one
+      historySaveError = 'the saved history could not be read, so it was left as it is';
+    } else {
+      try {
+        saveHistory(mergeForSave(stored, complete, { sameZone: sameClock }), undefined, { unreadable: loaded.unreadable, timeZone: zone });
+      } catch (err) {
+        historySaveError = (err as Error).message;
+      }
     }
   }
 

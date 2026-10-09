@@ -3,6 +3,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { StringDecoder } from 'string_decoder';
 import type { ClaudeMessage, UsageReport, ScanOptions, DayUsage } from '../types.js';
+import { plain } from '../fsafe.js';
+import { priceFor } from '../pricing.js';
 
 export interface ParseProgress {
   projectsFound: number;
@@ -61,11 +63,15 @@ export function findTranscripts(dir: string, errors: string[]): string[] {
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
-      errors.push(`Could not read folder: ${current}`);
+      if (errors.length < MAX_ERRORS_KEPT) errors.push(`Could not read folder: ${current}`);
       return;
     }
     for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
+      if (entry.isSymbolicLink()) {
+        // Links are not followed (they could lead anywhere), so what is behind one is not counted. Say so.
+        if (errors.length < MAX_ERRORS_KEPT) errors.push(`Skipped a link, not counted: ${path.join(current, entry.name)}`);
+        continue;
+      }
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) found.push(full);
@@ -95,9 +101,15 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Claude Code did not exist before this, so an older timestamp is a bad clock. A day ahead allows for time zones.
 const EARLIEST_PLAUSIBLE = Date.UTC(2024, 0, 1);
 
-/** A token count from the log: a whole number of 0 or more. Anything else (text, negative, NaN) counts as 0. */
+// No real request comes near this (the biggest context windows are about a million tokens). A count above it is a damaged
+// or invented log line, and counting it would turn a total into Infinity (and a saved file into nulls).
+const MAX_TOKENS_PER_COUNT = 1_000_000_000;
+// A model name longer than this is not a model name. It is cut, so one bad line cannot fill the terminal or the saved history.
+const MAX_MODEL_NAME_CHARS = 100;
+
+/** A token count from the log: a whole number of 0 or more. Anything else (text, negative, NaN, absurdly large) counts as 0. */
 export function tokenCount(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 0;
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TOKENS_PER_COUNT ? Math.floor(value) : 0;
 }
 
 /** A usable timestamp, or null when it is missing, invalid, before 2024, or more than a day in the future. */
@@ -195,7 +207,8 @@ export async function scanClaudeUsage(
     errors: [],
   };
   const addError = (message: string) => {
-    if (progress.errors.length < MAX_ERRORS_KEPT) progress.errors.push(message);
+    // Paths come from the disk and can hold control characters, so they are cleaned before they are kept (and later printed)
+    if (progress.errors.length < MAX_ERRORS_KEPT) progress.errors.push(plain(message).slice(0, 400));
   };
 
   const nowMs = Date.now();
@@ -293,7 +306,7 @@ export async function scanClaudeUsage(
     }
 
     replies.set(key, {
-      model: typeof msg.model === 'string' && msg.model ? msg.model : 'unknown',
+      model: typeof msg.model === 'string' && msg.model ? msg.model.slice(0, MAX_MODEL_NAME_CHARS) : 'unknown',
       ts,
       sessionId: (typeof entry.sessionId === 'string' && entry.sessionId) || file,
       input,
@@ -335,9 +348,10 @@ export async function scanClaudeUsage(
   let unfinishedTotal = 0;
   for (const r of replies.values()) {
     let model = r.model;
-    // Haiku 5.5 bills a whole request at a higher rate when its prompt is over 100K tokens
+    // Haiku 5.5 bills a whole request at a higher rate when its prompt is over 100K tokens.
+    // Only a model the price table knows as Haiku 5.5 is moved: a name that merely starts the same is not guessed at.
     const promptTokens = r.input + r.cacheRead + r.cacheWrite5m + r.cacheWrite1h;
-    if (model.startsWith('claude-haiku-5-5') && promptTokens > 100_000) model = 'claude-haiku-5-5-long-prompt';
+    if (promptTokens > 100_000 && priceFor(model) === priceFor('claude-haiku-5-5')) model = 'claude-haiku-5-5-long-prompt';
 
     tokens.input += r.input;
     tokens.output += r.output;

@@ -21,6 +21,21 @@ export function formatApproxUsd(n: number): string {
   return `$${value.toFixed(2)}`;
 }
 
+/**
+ * The same rounding as formatApproxUsd, but always DOWN. For a figure that is a minimum ("at least"), rounding up
+ * would claim more than we know: a minimum of $105.10 must not read "at least $110".
+ */
+export function formatAtLeastUsd(n: number): string {
+  const value = Number.isFinite(n) ? Math.max(0, n) : 0;
+  if (value >= 100) return `$${(Math.floor(value / 10) * 10).toLocaleString('en-US')}`;
+  if (value >= 10) return `$${Math.floor(value)}`;
+  // The small nudge keeps an exact amount such as 4.29 from landing on 4.28 through floating-point error
+  return `$${(Math.floor(value * 100 + 1e-9) / 100).toFixed(2)}`;
+}
+
+/** "1 report", "2 reports" */
+export const plural = (count: number, one: string, many = `${one}s`): string => `${formatCount(count)} ${count === 1 ? one : many}`;
+
 /** Tokens in short form: 950, 1.2k, 3.4M, 1.1B. Rounds first, so 999,950 reads 1.0M and not 1000.0k. */
 export const formatTokenNumber = (num: number): string => {
   const n = Number.isFinite(num) ? num : 0;
@@ -34,6 +49,35 @@ export const formatTokenNumber = (num: number): string => {
 export function parseDay(key: string): Date {
   const [y, m, d] = key.split('-').map(Number);
   return new Date(y, m - 1, d);
+}
+
+const DAY_MS = 86_400_000;
+const dayNumber = (key: string): number => {
+  const [y, m, d] = key.split('-').map(Number);
+  return Date.UTC(y, m - 1, d);
+};
+
+/** The day key a number of days before (negative) or after (positive) another. Whole days, so clock changes do not matter. */
+export function shiftDay(key: string, delta: number): string {
+  const d = new Date(dayNumber(key) + delta * DAY_MS);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Whole days from one day key to another (0 when they are the same day). */
+export const daysBetween = (startKey: string, endKey: string): number => Math.round((dayNumber(endKey) - dayNumber(startKey)) / DAY_MS);
+
+/**
+ * Every day key from start to end, both included. Counts whole days, not hours, so a clock change
+ * (some zones jump at midnight) can never skip or repeat a day.
+ */
+export function calendarDays(startKey: string, endKey: string): string[] {
+  const out: string[] = [];
+  const last = dayNumber(endKey);
+  for (let t = dayNumber(startKey); t <= last; t += DAY_MS) {
+    const d = new Date(t);
+    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`);
+  }
+  return out;
 }
 
 /** "Sep 30" */

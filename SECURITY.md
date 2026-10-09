@@ -21,10 +21,10 @@ Please don't open a public issue that describes a security problem.
   refuses requests the browser marks as cross-site. It hands your numbers only to its own page. The developer
   command `serve` additionally allows the dashboard dev ports (5173, 4173) and any origin you pass with `--origin`.
 - **Files it writes** (`~/.llm-usage/*`, `usage_report.json`) are created readable by your user only, where the
-  operating system supports that. `scan` warns when the report would land inside a git folder.
+  operating system supports that. `scan` warns before it writes the report into a git folder.
 - **Releases** are published by hand from the maintainer's computer with npm two-factor sign-in. There is no
-  automation token to steal. The command ships a pinned dependency list (`npm-shrinkwrap.json`), so a new version of
-  a dependency cannot reach users without a new release.
+  automation token to steal. The command ships a pinned list of the exact versions of the packages it needs
+  (`npm-shrinkwrap.json`), so a new version of a dependency cannot reach users without a new release.
 
 ## Known limits
 

@@ -55,6 +55,7 @@ conversations.json
 # Dashboard bundled into the CLI package (built by npm run build:app)
 packages/cli/web
 
-# Copied in by scripts/prepack.mjs when packing
+# Made by scripts/prepack.mjs while packing (and removed again by postpack.mjs)
 packages/cli/README.md
 packages/cli/LICENSE
+packages/cli/npm-shrinkwrap.json

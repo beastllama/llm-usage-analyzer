@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/*.test.ts",
     "prepack": "node scripts/prepack.mjs",
+    "postpack": "node scripts/postpack.mjs",
     "prepublishOnly": "npm --prefix ../.. run build:app && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {

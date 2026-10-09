@@ -31,15 +31,16 @@ const stop = (text) => {
 const q = (s) => (win ? `"${s}"` : s);
 
 function run(cmd, args, { cwd = root, capture = false, allowFail = false } = {}) {
-  const r = spawnSync(cmd, args, {
-    cwd,
-    shell: win, // Windows runs npm through a .cmd file, which needs a shell
-    encoding: 'utf8',
-    stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit',
-  });
+  const options = { cwd, encoding: 'utf8', stdio: capture ? ['ignore', 'pipe', 'pipe'] : 'inherit' };
+  // Windows runs npm through a .cmd file, which needs a shell. One command string, so Node 24 does not warn about arguments.
+  const r = win
+    ? spawnSync([cmd, ...args].join(' '), { ...options, shell: true })
+    : spawnSync(cmd, args, options);
   if (r.error) stop(`Could not run "${cmd}": ${r.error.message}`);
   if (r.status !== 0 && !allowFail) {
-    stop(`"${[cmd, ...args].join(' ')}" failed (exit ${r.status}). Fix that, then run this again.`);
+    // Captured output is not on the screen, so show what the command said
+    const said = capture ? `\n${(r.stderr || r.stdout || '').trim()}\n` : ' ';
+    stop(`"${[cmd, ...args].join(' ')}" failed (exit ${r.status}).${said}Fix that, then run this again.`);
   }
   return r;
 }
@@ -56,11 +57,13 @@ if (branch !== 'main') stop(`You are on "${branch}", not "main". Run: git checko
 if (out(run('git', ['status', '--porcelain'], { capture: true }))) {
   stop('Some changes are not committed. Run "git status" to see them, then commit or discard them.');
 }
-run('git', ['fetch', '--quiet', 'origin', 'main'], { capture: true, allowFail: true });
-const behind = out(run('git', ['rev-list', '--count', 'HEAD..origin/main'], { capture: true, allowFail: true }));
-const ahead = out(run('git', ['rev-list', '--count', 'origin/main..HEAD'], { capture: true, allowFail: true }));
-if (behind && behind !== '0') stop(`Your main is ${behind} commit(s) behind GitHub. Run: git pull`);
-if (ahead && ahead !== '0') stop(`Your main has ${ahead} commit(s) that GitHub does not have. Run: git push`);
+// Without a fresh look at GitHub, "same as GitHub" would be a guess, so a failed fetch stops the release
+const fetched = run('git', ['fetch', '--quiet', 'origin', 'main'], { capture: true, allowFail: true });
+if (fetched.status !== 0) stop(`Could not reach GitHub to compare your main with it. Is the internet on, and is "origin" set?\n${(fetched.stderr || '').trim()}`);
+const behind = out(run('git', ['rev-list', '--count', 'HEAD..origin/main'], { capture: true }));
+const ahead = out(run('git', ['rev-list', '--count', 'origin/main..HEAD'], { capture: true }));
+if (behind !== '0') stop(`Your main is ${behind} commit(s) behind GitHub. Run: git pull`);
+if (ahead !== '0') stop(`Your main has ${ahead} commit(s) that GitHub does not have. Run: git push`);
 console.log(`On main, nothing uncommitted, same as GitHub. Releasing ${pkg.name}@${pkg.version}.`);
 
 // 2 ---------------------------------------------------------------------------------------------
@@ -158,8 +161,13 @@ async function smokeTest() {
     console.log(`Started on port ${port}: dashboard served, security policy present, version ${pkg.version}.`);
     return null;
   } finally {
-    if (child) child.kill();
-    fs.rmSync(tmp, { recursive: true, force: true });
+    if (child) {
+      const exited = new Promise((resolve) => child.once('exit', resolve));
+      child.kill();
+      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
+    }
+    // Windows can hold the folder for a moment after the program stops, so removing it is tried a few times
+    fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
   }
 }
 const smokeProblem = await smokeTest();
@@ -168,6 +176,8 @@ if (smokeProblem) stop(smokeProblem);
 // 8 ---------------------------------------------------------------------------------------------
 if (dry) {
   say('Rehearsal publish (npm publish --dry-run)');
+  console.log('npm builds and tests the package once more, then stops before uploading.');
+  console.log('Its "+ name@version" line and a warning about being logged in are part of a dry run. Nothing is uploaded.');
   run('npm', ['publish', '--dry-run'], { cwd: cli });
   console.log('\nRehearsal finished. NOTHING was published. Run "npm run release" to do it for real.\n');
   process.exit(0);
@@ -175,8 +185,16 @@ if (dry) {
 
 say('Publishing');
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-const answer = await rl.question(`\nPublish ${pkg.name}@${pkg.version} to npm now? This cannot be undone.\nType ${pkg.version} to confirm: `);
-rl.close();
+let answer = '';
+try {
+  answer = await rl.question(`\nPublish ${pkg.name}@${pkg.version} to npm now? This cannot be undone.\nType ${pkg.version} to confirm: `);
+} catch {
+  // Ctrl+C or Ctrl+D at the question
+  console.log('');
+  stop('Cancelled. Nothing was published.');
+} finally {
+  rl.close();
+}
 if (answer.trim() !== pkg.version) stop('Not confirmed. Nothing was published.');
 
 run('npm', ['publish'], { cwd: cli }); // npm asks for your 2FA code here
@@ -184,7 +202,8 @@ run('npm', ['publish'], { cwd: cli }); // npm asks for your 2FA code here
 console.log(`
 Published ${pkg.name}@${pkg.version}.
 
-Last two steps:
-  git tag v${pkg.version} && git push origin v${pkg.version}
+Last steps (one command at a time):
+  git tag v${pkg.version}
+  git push origin v${pkg.version}
   npx --yes ${pkg.name}@${pkg.version} --version      (should print ${pkg.version})
 `);

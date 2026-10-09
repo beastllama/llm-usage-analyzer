@@ -12,12 +12,14 @@ import { calculateAnalysis, analyzeUsagePattern } from '../services/analysisServ
 import { describeAnswer } from '../services/answer';
 import { buildAiQuestion, buildShareLine, copyText } from '../services/shareService';
 import { ESTIMATED_MODEL } from '../services/fileImport';
+import { withQuietDays } from '../services/dailyRows';
 import { PLANS, PLAN_KEYS, PlanKey, toPlanKey } from '../services/pricing';
-import { formatCount, formatDay, formatTokenNumber, formatUsd, formatApproxUsd, parseDay, plain } from '../services/format';
+import { formatAtLeastUsd, formatCount, formatDay, formatTokenNumber, formatUsd, parseDay, plain } from '../services/format';
 import { safeLocal } from '../services/safeStorage';
 import { exportToJSON, exportToCSV, exportToPDF } from '../services/exportService';
 import PlanComparison from './PlanComparison';
 import PlanFitAnalyzer from './PlanFitAnalyzer';
+import { CHART_START_SIZE } from './chartSize';
 
 export interface LiveStatus {
   connected: boolean;
@@ -25,46 +27,41 @@ export interface LiveStatus {
   updatedAt: number | null;
 }
 
+/** How a refresh ended: it worked, the analyzer is not running, or it answered with something unusable. */
+export type RefreshResult = 'ok' | 'stopped' | 'error';
+
 interface DashboardProps {
   data: UsageReport;
   onReset: () => void;
   isLiveData?: boolean;
   live?: LiveStatus;
-  /** Read the numbers again. Resolves true when it worked. */
-  onLiveRefresh?: () => Promise<boolean>;
+  /** Read the numbers again. */
+  onLiveRefresh?: () => Promise<RefreshResult>;
 }
 
 const COLORS = ['#818cf8', '#c084fc', '#f472b6', '#fb7185', '#fbbf24', '#34d399', '#22d3ee', '#a3a3a3'];
 const PLAN_STORAGE_KEY = 'selectedPlan';
-const MAX_FILLED_DAYS = 400;
 
 type Panel = 'compare' | 'pattern' | null;
-
-/** The daily rows with the quiet days filled in as zero, so the chart's time axis has no gaps. */
-function withQuietDays(days: UsageReport['usage']['messages']['by_day']) {
-  if (days.length < 2) return days;
-  const byDate = new Map(days.map((d) => [d.date, d]));
-  const first = parseDay(days[0].date);
-  const last = parseDay(days[days.length - 1].date);
-  if ((last.getTime() - first.getTime()) / 86_400_000 > MAX_FILLED_DAYS) return days;
-  const out: typeof days = [];
-  for (const d = new Date(first); d <= last; d.setDate(d.getDate() + 1)) {
-    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    out.push(byDate.get(key) ?? { date: key, count: 0, input: 0, output: 0 });
-  }
-  return out;
+interface Notice {
+  text: string;
+  /** "ok" is a confirmation. "problem" says something did not work, and stays longer. */
+  tone: 'ok' | 'problem';
 }
+
+const PANEL_NAMES: Record<Exclude<Panel, null>, string> = { compare: 'Compare plans', pattern: 'Usage pattern' };
 
 const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData, live, onLiveRefresh }) => {
   const storedPlan = useMemo(() => toPlanKey(safeLocal.get(PLAN_STORAGE_KEY)), []);
   const [selectedPlan, setSelectedPlan] = useState<PlanKey>(storedPlan ?? 'Claude Pro');
-  // Until the person picks a plan, the answer uses Pro and says so
+  // Until the person picks a plan, the answer uses Pro, says so, and marks the plan as assumed in anything copied or saved
   const [planChosen, setPlanChosen] = useState(storedPlan !== null);
   const choosePlan = (key: PlanKey) => { setSelectedPlan(key); setPlanChosen(true); };
+  const assumed = !planChosen;
   const [panel, setPanel] = useState<Panel>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const moreWrapRef = useRef<HTMLDivElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
@@ -89,41 +86,55 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
     headingRef.current?.focus({ preventScroll: true });
   }, []);
 
-  // Escape closes the open menu or panel. Clicking elsewhere closes the menu.
+  /** Close the "More" menu and hand focus back to its button, so the keyboard does not start again from the top of the page. */
+  const closeMenu = (returnFocus = true) => {
+    setShowMore(false);
+    if (returnFocus) moreButtonRef.current?.focus();
+  };
+
+  const closePanel = () => {
+    setPanel(null);
+    moreButtonRef.current?.focus();
+  };
+
+  // Escape closes the open menu or panel. Pressing or tapping elsewhere closes the menu.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
       if (showMore) {
-        setShowMore(false);
-        moreButtonRef.current?.focus();
+        closeMenu();
       } else if (panel) {
-        setPanel(null);
+        closePanel();
       }
     };
-    const onPointer = (e: MouseEvent) => {
+    // pointerdown, not mousedown: a tap on a phone does not always send a mouse event
+    const onPointer = (e: PointerEvent) => {
       if (showMore && moreWrapRef.current && !moreWrapRef.current.contains(e.target as Node)) setShowMore(false);
     };
     window.addEventListener('keydown', onKey);
-    window.addEventListener('mousedown', onPointer);
+    window.addEventListener('pointerdown', onPointer);
     return () => {
       window.removeEventListener('keydown', onKey);
-      window.removeEventListener('mousedown', onPointer);
+      window.removeEventListener('pointerdown', onPointer);
     };
   }, [showMore, panel]);
 
-  // A short confirmation that clears itself
+  // A short message that clears itself. Problems stay a little longer.
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 5000);
+    const t = setTimeout(() => setNotice(null), notice.tone === 'problem' ? 8000 : 5000);
     return () => clearTimeout(t);
   }, [notice]);
 
   const handleRefresh = async () => {
-    if (!onLiveRefresh) return;
+    // aria-disabled, not disabled: a disabled button drops keyboard focus
+    if (!onLiveRefresh || isRefreshing) return;
     setIsRefreshing(true);
-    const ok = await onLiveRefresh();
+    const result = await onLiveRefresh();
     setIsRefreshing(false);
-    setNotice(ok ? 'Updated.' : "Couldn't refresh. The analyzer may have stopped. Run npx llm-usage-analyzer again.");
+    if (result === 'ok') setNotice({ text: 'Updated.', tone: 'ok' });
+    else if (result === 'stopped') setNotice({ text: "Couldn't refresh. The analyzer may have stopped. Run npx llm-usage-analyzer again.", tone: 'problem' });
+    else setNotice({ text: "Couldn't read your history just now. Try Refresh again.", tone: 'problem' });
   };
 
   const openPanel = (next: Panel) => {
@@ -137,24 +148,24 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   };
 
   const handleExport = (format: 'json' | 'csv' | 'pdf') => {
-    setShowMore(false);
-    if (format === 'json') setNotice(`Saved ${exportToJSON(data)}. Check your downloads.`);
-    if (format === 'csv') setNotice(`Saved ${exportToCSV(data, selectedPlan)}. Check your downloads.`);
+    closeMenu();
+    if (format === 'json') setNotice({ text: `Saved ${exportToJSON(data)}. Check your downloads.`, tone: 'ok' });
+    if (format === 'csv') setNotice({ text: `Saved ${exportToCSV(data, selectedPlan, { assumed })}. Check your downloads.`, tone: 'ok' });
     if (format === 'pdf') {
-      exportToPDF(data, selectedPlan);
-      setNotice('Opening a print page in a new tab. If nothing opens, allow pop-ups for this page.');
+      exportToPDF(data, selectedPlan, assumed);
+      setNotice({ text: 'Opening a print page in a new tab. If nothing opens, allow pop-ups for this page.', tone: 'ok' });
     }
   };
 
   const copyAndTell = async (text: string, done: string) => {
-    setShowMore(false);
-    setNotice((await copyText(text)) ? done : 'Could not copy. Your browser blocked it.');
+    closeMenu();
+    setNotice((await copyText(text)) ? { text: done, tone: 'ok' } : { text: 'Could not copy. Your browser blocked it.', tone: 'problem' });
   };
-
-  const shareLine = isDemo ? null : buildShareLine(cmp);
 
   // The answer only makes sense for Claude usage with at least one priced model
   const comparable = data.provider === 'anthropic' && cmp.canJudge && totalTokens > 0;
+  // A share note says something about the person's plan, so it is only offered when there is an answer to share
+  const shareLine = comparable && !isDemo ? buildShareLine(cmp, assumed) : null;
   const nothingToCompare = totalTokens === 0
     ? { title: 'No Claude usage found yet', text: isLiveData ? 'Use Claude Code for a while, then press Refresh.' : 'There is no usage in this file.' }
     : isWebExport
@@ -205,8 +216,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
           {isLiveData && (
             <button
               onClick={handleRefresh}
-              disabled={isRefreshing}
-              className="text-sm flex items-center gap-2 px-4 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 disabled:opacity-60 disabled:cursor-not-allowed"
+              aria-disabled={isRefreshing}
+              className={`text-sm flex items-center gap-2 px-4 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 ${isRefreshing ? 'opacity-60 cursor-not-allowed' : ''}`}
             >
               <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'motion-safe:animate-spin' : ''}`} aria-hidden="true" />
               {isRefreshing ? 'Reading…' : 'Refresh'}
@@ -232,7 +243,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                   <li><MenuItem icon={<Sparkles className="w-4 h-4" />} onClick={() => openPanel('pattern')}>Usage pattern</MenuItem></li>
                   {comparable && !isDemo && (
                     <li className="border-t border-white/10">
-                      <MenuItem icon={<MessageCircle className="w-4 h-4" />} onClick={() => copyAndTell(buildAiQuestion(data, cmp, pattern), 'Copied. Paste it into any AI.')}>Copy for an AI</MenuItem>
+                      <MenuItem icon={<MessageCircle className="w-4 h-4" />} onClick={() => copyAndTell(buildAiQuestion(data, cmp, pattern, assumed), 'Copied. Paste it into any AI.')}>Copy for an AI</MenuItem>
                     </li>
                   )}
                   {shareLine && (
@@ -262,15 +273,23 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
       {/* A reserved line, so a message appearing does not push the page down */}
       <div role="status" aria-live="polite" className="min-h-9">
         {notice && (
-          <p className="inline-flex items-center gap-2 text-sm text-green-200 bg-green-500/10 border border-green-500/30 rounded-lg px-3 py-1.5">
-            <Check className="w-4 h-4" aria-hidden="true" /> {notice}
+          <p className={`inline-flex items-center gap-2 text-sm rounded-lg px-3 py-1.5 border ${
+            notice.tone === 'ok'
+              ? 'text-green-200 bg-green-500/10 border-green-500/30'
+              : 'text-amber-100 bg-amber-500/10 border-amber-500/30'
+          }`}>
+            {notice.tone === 'ok'
+              ? <Check className="w-4 h-4 shrink-0" aria-hidden="true" />
+              : <AlertTriangle className="w-4 h-4 shrink-0" aria-hidden="true" />}
+            {notice.text}
           </p>
         )}
       </div>
 
       {/* The answer: one card, one sentence, plain numbers */}
       <section aria-labelledby="answer-title" className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 md:p-8 space-y-6">
-        <div>
+        {/* A live region, so a screen reader hears the answer change when the plan changes */}
+        <div aria-live="polite">
           <p className="text-xs uppercase tracking-wide text-slate-300">Your answer</p>
           {comparable ? (
             <>
@@ -284,8 +303,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                   {warnings.map((c) => <li key={c} className="flex gap-2"><AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />{c}</li>)}
                 </ul>
               )}
-              {!planChosen && (
-                <p className="text-sm text-slate-300 mt-2">Not on Pro? Pick your plan below.</p>
+              {assumed && (
+                <p className="text-sm text-slate-300 mt-2">We assumed the Pro plan. Pick yours below.</p>
               )}
             </>
           ) : (
@@ -324,6 +343,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                     value={key}
                     checked={key === selectedPlan}
                     onChange={() => choosePlan(key)}
+                    // Choosing the plan that is already selected sends no change, but it does confirm the choice
+                    onClick={() => choosePlan(key)}
                     className="sr-only"
                   />
                   {key === selectedPlan && <Check className="w-4 h-4" aria-hidden="true" />}
@@ -342,7 +363,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
             </div>
             <div className="bg-slate-900/50 rounded-xl p-4">
               <div className="text-xs text-slate-300">{cmp.lowerBound ? 'Pay-as-you-go (at least)' : 'Pay-as-you-go (estimate)'}</div>
-              <div className="text-3xl font-bold text-white">{cmp.lowerBound ? formatApproxUsd(cmp.apiCostMonthly) : formatUsd(cmp.apiCostMonthly)}<span className="text-base text-slate-300 font-normal">/mo</span></div>
+              <div className="text-3xl font-bold text-white">{cmp.lowerBound ? formatAtLeastUsd(cmp.apiCostMonthly) : formatUsd(cmp.apiCostMonthly)}<span className="text-base text-slate-300 font-normal">/mo</span></div>
             </div>
           </div>
         )}
@@ -366,17 +387,17 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
         )}
       </section>
 
-      {/* Optional panels: one at a time */}
+      {/* Optional panels: one at a time. The region is named, so a screen reader says which panel opened and not all of it. */}
       {panel && (
-        <div ref={panelRef} tabIndex={-1} className="outline-none scroll-mt-24">
+        <div ref={panelRef} tabIndex={-1} role="region" aria-label={PANEL_NAMES[panel]} className="outline-none scroll-mt-24">
           {panel === 'compare' && (
-            <PlanComparison data={data} selectedPlan={selectedPlan} onSelect={choosePlan} onClose={() => setPanel(null)} />
+            <PlanComparison data={data} selectedPlan={selectedPlan} onSelect={choosePlan} onClose={closePanel} />
           )}
           {panel === 'pattern' && (
-            <section aria-label="Usage pattern" className="bg-slate-800/40 border border-white/10 rounded-2xl p-6 relative">
-              <button onClick={() => setPanel(null)} className="absolute top-3 right-3 text-sm text-slate-200 hover:text-white min-h-11 px-3">Close</button>
+            <div className="bg-slate-800/40 border border-white/10 rounded-2xl p-6 relative">
+              <button onClick={closePanel} className="absolute top-3 right-3 text-sm text-slate-200 hover:text-white min-h-11 px-3">Close</button>
               <PlanFitAnalyzer data={data} showCliHint={!isWebExport} />
-            </section>
+            </div>
           )}
         </div>
       )}
@@ -390,7 +411,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
               {pattern.peakDay ? `Busiest day: ${formatDay(pattern.peakDay.date)}, ${formatCount(pattern.peakDay.count)} replies.` : 'No replies yet.'}
             </p>
             <div className="h-[260px] w-full" role="img" aria-label={`Bar chart of replies per day. ${pattern.peakDay ? `Busiest day: ${formatDay(pattern.peakDay.date)}, ${pattern.peakDay.count} replies.` : ''}`}>
-              <ResponsiveContainer width="100%" height="100%">
+              <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
                 <BarChart data={dailyRows} accessibilityLayer={false}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
                   <XAxis dataKey="date" tickFormatter={formatXAxisDate} stroke="#cbd5e1" fontSize={12} />
@@ -414,7 +435,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                 role="img"
                 aria-label={`Pie chart of tokens by model. ${modelBreakdown.slice(0, 5).map((r) => `${r.name} ${Math.round((r.value / modelTotal) * 100)}%`).join(', ')}`}
               >
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer width="100%" height="100%" initialDimension={CHART_START_SIZE}>
                   <PieChart accessibilityLayer={false}>
                     <Pie data={modelBreakdown} cx="50%" cy="50%" innerRadius={55} outerRadius={80} paddingAngle={4} dataKey="value" isAnimationActive={false}>
                       {modelBreakdown.map((entry, index) => (
@@ -430,9 +451,9 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
               </div>
               <ul className="flex flex-wrap gap-x-4 gap-y-1 justify-center mt-2 text-sm text-slate-200">
                 {modelBreakdown.map((entry, index) => (
-                  <li key={entry.name} className="flex items-center gap-1.5">
-                    <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} aria-hidden="true" />
-                    {entry.name} <span className="text-slate-300">{Math.round((entry.value / modelTotal) * 100)}%</span>
+                  <li key={entry.name} className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: COLORS[index % COLORS.length] }} aria-hidden="true" />
+                    <span className="min-w-0 break-words">{entry.name} <span className="text-slate-300">{Math.round((entry.value / modelTotal) * 100)}%</span></span>
                   </li>
                 ))}
               </ul>
@@ -442,11 +463,13 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6">
             <h3 className="text-lg font-semibold text-white mb-4">Sent and received</h3>
             <div className="space-y-5">
-              <Meter label="Sent (what you wrote)" value={data.usage.tokens.input} percent={inputShare} barClass="bg-indigo-400" />
-              <Meter label="Received (what Claude wrote)" value={data.usage.tokens.output} percent={100 - inputShare} barClass="bg-emerald-400" />
+              <Meter label="Sent to Claude (new input)" value={data.usage.tokens.input} percent={inputShare} barClass="bg-indigo-400" />
+              <Meter label="Received from Claude" value={data.usage.tokens.output} percent={100 - inputShare} barClass="bg-emerald-400" />
             </div>
             {data.usage.tokens.cached ? (
-              <p className="text-sm text-slate-300 mt-4">Reused text: {formatTokenNumber(data.usage.tokens.cached)} tokens, billed at a cheaper rate.</p>
+              <p className="text-sm text-slate-300 mt-4">
+                Cached text: {formatTokenNumber(data.usage.tokens.cached)} tokens. Reading it back costs less than new input. Writing it costs more.
+              </p>
             ) : null}
             <p className="text-xs text-slate-300 mt-3">
               A token is a small piece of text, about 4 characters.{isWebExport ? ' These are estimated from text length.' : ''}

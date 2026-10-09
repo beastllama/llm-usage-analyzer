@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import type { UsageReport, DayUsage } from './types.js';
 import type { DayDetail } from './parsers/claude.js';
-import { writePrivateFile } from './fsafe.js';
+import { ensurePrivateFolder, writePrivateFile } from './fsafe.js';
 
 /**
  * Daily totals kept on this computer. Claude Code deletes transcripts after 30 days by default,
@@ -21,20 +21,28 @@ type Models = DayDetail['by_model'];
 
 const zeroModel = () => ({ input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 });
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const dayNumber = (key: string): number => {
+  const [y, m, d] = key.split('-').map(Number);
+  return Date.UTC(y, m - 1, d);
+};
+const shiftDay = (key: string, delta: number): string => new Date(dayNumber(key) + delta * DAY_MS).toISOString().slice(0, 10);
+
 /**
- * Combine stored days with this scan's days. When both have a day, keep the one with more replies,
- * so a partial day never replaces a complete one.
+ * Days are keyed by the calendar day on this computer's clock, so a day means something different in another
+ * time zone. The zone is saved with the days, and a scan in a different zone does not mix the two (see below).
  */
-export function mergeForSave(
-  stored: Record<string, DayDetail>,
-  current: Record<string, DayDetail>,
-): Record<string, DayDetail> {
-  const out: Record<string, DayDetail> = Object.assign(Object.create(null), stored);
-  for (const [date, d] of Object.entries(current)) {
-    const old = stored[date];
-    if (!old || d.count >= old.count) out[date] = d;
+export function currentTimeZone(): string | undefined {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
   }
-  return out;
+}
+
+/** True when saved days and the current clock use the same zone, or when either is not known (then nothing can be said against it). */
+export function sameZone(saved: string | undefined, now: string | undefined): boolean {
+  return !saved || !now || saved === now;
 }
 
 const count = (v: unknown): number | null =>
@@ -63,23 +71,73 @@ function cleanDay(value: unknown): DayDetail | null {
   return { count: replies, input, output, ...(unfinished ? { unfinished } : {}), by_model };
 }
 
-export interface LoadedHistory {
-  days: Record<string, DayDetail>;
-  /** Something plain to tell the user when the file could not be used fully. */
-  warning?: string;
+/**
+ * Combine stored days with this scan's days. When both have a day, keep the one with more replies,
+ * so a partial day never replaces a complete one.
+ *
+ * When the stored days were kept in another time zone, their day boundaries are not this scan's, so a reply near
+ * midnight could be in a stored day and in a scanned day next to it. Then the scan wins wherever it reaches
+ * (and one day beyond), and only stored days clear of the scan are kept.
+ */
+export function mergeForSave(
+  stored: Record<string, DayDetail>,
+  current: Record<string, DayDetail>,
+  options: { sameZone?: boolean } = {},
+): Record<string, DayDetail> {
+  const out: Record<string, DayDetail> = Object.create(null);
+  const scanned = Object.keys(current).sort();
+  const sameClock = options.sameZone ?? true;
+
+  if (sameClock || scanned.length === 0) {
+    Object.assign(out, stored);
+  } else {
+    const from = shiftDay(scanned[0], -1);
+    const to = shiftDay(scanned[scanned.length - 1], 1);
+    for (const [date, d] of Object.entries(stored)) if (date < from || date > to) out[date] = d;
+  }
+
+  for (const [date, d] of Object.entries(current)) {
+    // A day with numbers that are not real (they would be written as null) never replaces what is saved
+    if (!cleanDay(d)) continue;
+    const old = out[date];
+    if (!old || d.count >= old.count) out[date] = d;
+  }
+  return out;
 }
 
+export interface LoadedHistory {
+  /** The days that could be read. */
+  days: Record<string, DayDetail>;
+  /** The time zone the days were kept in, when the file says. */
+  timeZone?: string;
+  /** Entries that could not be read. They are written back unchanged when the file is saved, so nothing is lost. */
+  unreadable: Record<string, unknown>;
+  /** Something plain to tell the user when the file could not be used fully. */
+  warning?: string;
+  /**
+   * False when the file is there but could not be read at all (for example a permissions problem).
+   * Saving then would replace it, so nothing is saved until it can be read.
+   */
+  safeToSave: boolean;
+}
+
+const emptyHistory = (): LoadedHistory => ({ days: Object.create(null), unreadable: Object.create(null), safeToSave: true });
+
 /**
- * Read the saved days. A file that cannot be read is moved aside (never deleted, never overwritten)
- * and the scan carries on without it.
+ * Read the saved days. A file that holds something other than saved days is moved aside (never deleted, never
+ * overwritten) and the scan carries on without it. A file that cannot be opened at all is left exactly as it is.
  */
 export function loadHistoryChecked(file = historyFile()): LoadedHistory {
   let text: string;
   try {
     text = fs.readFileSync(file, 'utf-8');
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { days: Object.create(null) };
-    return { days: Object.create(null), warning: `Could not read your saved history (${(err as Error).message}).` };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return emptyHistory();
+    return {
+      ...emptyHistory(),
+      safeToSave: false,
+      warning: `Could not read your saved history (${(err as Error).message}). It was left as it is, and not updated.`,
+    };
   }
 
   let parsed: any;
@@ -97,32 +155,54 @@ export function loadHistoryChecked(file = historyFile()): LoadedHistory {
       moved = true;
     } catch { /* leave it where it is */ }
     return {
-      days: Object.create(null),
+      ...emptyHistory(),
+      // If it could not be moved, saving would replace it
+      safeToSave: moved,
       warning: moved
         ? `Your saved history could not be read. It was kept as ${aside} and a new one will be started.`
-        : 'Your saved history could not be read, and was left as it is.',
+        : 'Your saved history could not be read, and was left as it is. It was not updated.',
     };
   }
 
-  const days: Record<string, DayDetail> = Object.create(null);
+  const loaded = emptyHistory();
+  if (typeof parsed.timeZone === 'string' && parsed.timeZone) loaded.timeZone = parsed.timeZone;
   let skipped = 0;
   for (const [date, value] of Object.entries(parsed.days)) {
     const day = /^\d{4}-\d{2}-\d{2}$/.test(date) ? cleanDay(value) : null;
-    if (day) days[date] = day;
-    else skipped++;
+    if (day) {
+      loaded.days[date] = day;
+    } else {
+      skipped++;
+      // Kept as it is, so saving never deletes something that only looks damaged to this version
+      loaded.unreadable[date] = value;
+    }
   }
-  return skipped > 0
-    ? { days, warning: `${skipped} saved day${skipped === 1 ? '' : 's'} could not be read and ${skipped === 1 ? 'was' : 'were'} skipped.` }
-    : { days };
+  if (skipped > 0) {
+    loaded.warning = `${skipped} saved day${skipped === 1 ? '' : 's'} could not be read and ${skipped === 1 ? 'was' : 'were'} skipped. ${skipped === 1 ? 'It stays' : 'They stay'} in the file.`;
+  }
+  return loaded;
 }
 
 export function loadHistory(file = historyFile()): Record<string, DayDetail> {
   return loadHistoryChecked(file).days;
 }
 
-/** Write atomically, with owner-only permissions. */
-export function saveHistory(days: Record<string, DayDetail>, file = historyFile()): void {
-  writePrivateFile(file, JSON.stringify({ version: 1, days }, null, 2));
+/**
+ * Write atomically, with owner-only permissions. `unreadable` entries from the last load are written back unchanged
+ * (a day that was read and saved again replaces its unreadable copy), and the time zone of the days is recorded.
+ */
+export function saveHistory(
+  days: Record<string, DayDetail>,
+  file = historyFile(),
+  extra: { unreadable?: Record<string, unknown>; timeZone?: string } = {},
+): void {
+  ensurePrivateFolder(path.dirname(file));
+  const out: Record<string, unknown> = Object.create(null);
+  Object.assign(out, extra.unreadable ?? {}, days);
+  const body: Record<string, unknown> = { version: 1 };
+  if (extra.timeZone) body.timeZone = extra.timeZone;
+  body.days = out;
+  writePrivateFile(file, JSON.stringify(body, null, 2));
 }
 
 /** Add (sign 1) or take away (sign -1) one day's totals from a report. */
@@ -148,15 +228,25 @@ function applyDay(report: UsageReport, d: DayDetail, sign: 1 | -1): void {
  * Bring saved days into the report: days the current scan did not see (Claude Code has deleted those
  * transcripts), and days where the saved copy has more replies than the scan found (part of that day's
  * transcripts is gone). Returns how many days came from the saved history.
+ *
+ * When the saved days were kept in a different time zone, only days clear of the scan are used. Otherwise a reply
+ * near midnight could be counted twice, once in each zone's version of the day.
  */
 export function addHistoryToReport(
   report: UsageReport,
   current: Record<string, DayDetail>,
   stored: Record<string, DayDetail>,
+  options: { sameZone?: boolean } = {},
 ): number {
   let used = 0;
+  const sameClock = options.sameZone ?? true;
+  const scanned = Object.keys(current).sort();
+  const clearBefore = !sameClock && scanned.length > 0 ? shiftDay(scanned[0], -1) : null;
+  const clearAfter = !sameClock && scanned.length > 0 ? shiftDay(scanned[scanned.length - 1], 1) : null;
 
   for (const [date, d] of Object.entries(stored)) {
+    if (clearBefore && clearAfter && date >= clearBefore && date <= clearAfter) continue;
+
     const seen = current[date];
     if (seen && seen.count >= d.count) continue;
 

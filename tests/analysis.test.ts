@@ -7,7 +7,7 @@ import { getModelDistribution, calculateMonthlyTrends, pickNonOverlapping, analy
 import { csvCell } from '../services/exportService.ts';
 import { MOCK_DATA } from '../constants.ts';
 import type { UsageReport, StoredReport } from '../types.ts';
-import { at, report, oneDay } from './helpers.ts';
+import { at, report, oneDay, daysOf, storedReport } from './helpers.ts';
 
 test('demo data totals equal the sum of its daily rows', () => {
   const days = MOCK_DATA.usage.messages.by_day;
@@ -131,11 +131,16 @@ test('a model named __proto__ cannot pollute the distribution', () => {
   const stored: StoredReport[] = [{
     id: 'x', savedAt: '2026-10-01T00:00:00.000Z', name: 'x',
     report: report({
-      usage: { ...MOCK_DATA.usage, tokens: { input: 10, output: 10, by_model: JSON.parse('{"__proto__":{"input":10,"output":10}}') } },
+      usage: {
+        ...MOCK_DATA.usage,
+        // One priced model, so the report counts in Trends, and one with the dangerous name
+        tokens: { input: 20, output: 20, by_model: JSON.parse('{"claude-sonnet-5-5":{"input":10,"output":10},"__proto__":{"input":10,"output":10}}') },
+      },
     } as Partial<UsageReport>),
   }];
   const dist = getModelDistribution(stored);
-  assert.equal(dist.length, 1);
+  assert.equal(dist.length, 2);
+  assert.ok(dist.some((d) => d.model === '__proto__'));
   assert.equal(({} as any).input, undefined, 'Object.prototype must be untouched');
 });
 
@@ -288,24 +293,11 @@ test('a usage pattern with no days has no peak and an average of zero', () => {
 
 // ---- Trends ----
 
-const monthReport = (id: string, days: string[], savedAt: string): StoredReport => ({
-  id, savedAt, name: id,
-  report: report({
-    period: { start: at(+days[0].slice(0, 4), +days[0].slice(5, 7), +days[0].slice(8, 10)), end: at(+days[days.length - 1].slice(0, 4), +days[days.length - 1].slice(5, 7), +days[days.length - 1].slice(8, 10)) },
-    usage: {
-      tokens: { input: days.length * 1000, output: 0, by_model: { 'claude-sonnet-5-5': { input: days.length * 1000, output: 0 } } },
-      messages: { count: days.length, by_day: days.map((date) => ({ date, count: 1, input: 1000, output: 0 })) },
-      sessions: { count: 1 },
-    },
-  } as Partial<UsageReport>),
-});
-const daysOf = (month: string, n: number) => Array.from({ length: n }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
-
 test('month over month is shown only when the latest month has 20 active days', () => {
-  const september = monthReport('sep', daysOf('2026-09', 30), '2026-10-01T00:00:00.000Z');
-  const short = analyzeUsageTrends([september, monthReport('oct', daysOf('2026-10', 19), '2026-10-30T00:00:00.000Z')]);
+  const september = storedReport('sep', daysOf('2026-09', 30), '2026-10-01T00:00:00.000Z');
+  const short = analyzeUsageTrends([september, storedReport('oct', daysOf('2026-10', 19), '2026-10-30T00:00:00.000Z')]);
   assert.equal(short?.percentChange, null);
-  const enough = analyzeUsageTrends([september, monthReport('oct', daysOf('2026-10', 20), '2026-10-30T00:00:00.000Z')]);
+  const enough = analyzeUsageTrends([september, storedReport('oct', daysOf('2026-10', 20), '2026-10-30T00:00:00.000Z')]);
   // September cost 30 x $0.002 = $0.06. October 20 x $0.002 = $0.04. That is a third less.
   assert.ok(enough?.percentChange !== null && enough !== null && Math.abs((enough.percentChange as number) + 100 / 3) < 1e-6);
   assert.equal(enough?.reportsUsed, 2);
@@ -313,21 +305,21 @@ test('month over month is shown only when the latest month has 20 active days', 
 });
 
 test('trends say when some usage has no price', () => {
-  const stored = monthReport('x', daysOf('2026-10', 3), '2026-10-04T00:00:00.000Z');
+  const stored = storedReport('x', daysOf('2026-10', 3), '2026-10-04T00:00:00.000Z');
   stored.report.usage.tokens.by_model['claude-mystery-9'] = { input: 500, output: 0 };
   assert.equal(analyzeUsageTrends([stored])?.hasUnpriced, true);
 });
 
 test('the weekday chart uses the calendar day, whatever the time zone', () => {
   // 2026-10-09 is a Friday
-  const stored = monthReport('fri', ['2026-10-09'], '2026-10-10T00:00:00.000Z');
+  const stored = storedReport('fri', ['2026-10-09'], '2026-10-10T00:00:00.000Z');
   const friday = getWeekdayHeatmap([stored]).find((d) => d.day === 'Friday');
   assert.equal(friday?.avgTokens, 1000);
   assert.equal(getWeekdayHeatmap([stored]).filter((d) => d.avgTokens > 0).length, 1);
 });
 
 test('the daily breakdown is sorted by date and spreads the cost by token share', () => {
-  const stored = monthReport('d', ['2026-10-03', '2026-10-01', '2026-10-02'], '2026-10-04T00:00:00.000Z');
+  const stored = storedReport('d', ['2026-10-03', '2026-10-01', '2026-10-02'], '2026-10-04T00:00:00.000Z');
   const days = getDailyBreakdown([stored]);
   assert.deepEqual(days.map((d) => d.date), ['2026-10-01', '2026-10-02', '2026-10-03']);
   assert.ok(near(days[0].cost, 0.002));
@@ -335,4 +327,27 @@ test('the daily breakdown is sorted by date and spreads the cost by token share'
 
 test('month names are written out for the chart', () => {
   assert.equal(formatMonth('2026-10'), 'Oct 2026');
+});
+
+test('an unpriced model cannot hide behind a pile of cheap cache reads', () => {
+  // The priced model has 40M cache-read tokens, which cost little. The unpriced model has 1.4M tokens that could cost a lot.
+  const r = report({
+    period: { start: at(2026, 9, 1), end: at(2026, 9, 30) },
+    usage: {
+      tokens: {
+        input: 3_000_000, output: 800_000,
+        by_model: {
+          'claude-sonnet-5-5': { input: 2_000_000, output: 400_000, cache_read: 40_000_000 },
+          'claude-opus-5-6': { input: 1_000_000, output: 400_000 },
+        },
+      },
+      messages: { count: 500, by_day: [{ date: '2026-09-10', count: 500, input: 3_000_000, output: 800_000 }] },
+      sessions: { count: 5 },
+    },
+  } as Partial<UsageReport>);
+  const cmp = calculateAnalysis(r, 'Claude Pro');
+  assert.ok(cmp.apiCostMonthly < 20, 'the priced part alone is below the plan price');
+  assert.equal(cmp.lowerBound, true);
+  assert.notEqual(cmp.verdict, 'switch', 'it must never claim pay-as-you-go is cheaper');
+  assert.equal(cmp.verdict, 'unknown');
 });

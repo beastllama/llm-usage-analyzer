@@ -1,7 +1,11 @@
 // The words of the answer, in one place. The screen, the exports, the share note and the AI question
 // all use this, so they can never disagree about what the numbers allow us to say.
 import type { MonthlyComparison } from './analysisService';
-import { formatApproxUsd, formatUsd, plain } from './format';
+import { MINIMUM_SHARE } from './estimate';
+import { formatApproxUsd, formatAtLeastUsd, formatUsd, plain } from './format';
+
+/** A plan as it should read in copied text and files: marked when the person never said which plan they pay for. */
+export const planLabel = (plan: string, assumed: boolean): string => (assumed ? `${plan} (assumed)` : plan);
 
 export interface Answer {
   /** One sentence. */
@@ -25,15 +29,12 @@ export function describeCaveats(cmp: MonthlyComparison): string[] {
   const q = cmp.quality;
   const out: string[] = [];
   if (cmp.lowConfidence) out.push('Early guess: there is under a week of data.');
-  if (q.unfinishedShare > 0.05) {
+  if (q.unfinishedShare > MINIMUM_SHARE) {
     out.push(`${Math.round(q.unfinishedShare * 100)}% of your replies were logged before they finished, so the real cost is higher.`);
   }
+  // Any usage with no price makes the cost a minimum: nothing says how much it would have added
   if (q.unpricedTokens > 0) {
-    out.push(
-      q.unpricedShare > 0.05
-        ? `We have no price for ${nameList(cmp.unpricedModels)}, so the real cost is higher.`
-        : `Left out: no price known for ${nameList(cmp.unpricedModels)}.`,
-    );
+    out.push(`We have no price for ${nameList(cmp.unpricedModels)}, so the real cost is higher.`);
   }
   return out;
 }
@@ -49,7 +50,7 @@ export function describeAnswer(cmp: MonthlyComparison): Answer {
         tone: 'keep',
         headline: `Your ${plan} plan costs less than pay-as-you-go.`,
         detail: cmp.lowerBound
-          ? `At least ${formatApproxUsd(cmp.difference)} a month less. The real gap is bigger.`
+          ? `At least ${formatAtLeastUsd(cmp.difference)} a month less. The real gap is bigger.`
           : `About ${formatApproxUsd(cmp.difference)} a month less. ${estimate}`,
         caveats,
       };
@@ -71,7 +72,7 @@ export function describeAnswer(cmp: MonthlyComparison): Answer {
       return {
         tone: 'unknown',
         headline: "We can't say yet.",
-        detail: `Pay-as-you-go would cost at least ${formatApproxUsd(cmp.apiCostMonthly)} a month. Your ${plan} plan is ${formatUsd(cmp.planPrice)}.`,
+        detail: `Pay-as-you-go would cost at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month. Your ${plan} plan is ${formatUsd(cmp.planPrice)}.`,
         caveats,
       };
   }

@@ -31,9 +31,10 @@ test('more than 5% unfinished replies makes the cost a minimum; exactly 5% does 
   assert.equal(estimateQuality(input({ replies: 100, unfinished: 6 })).lowerBound, true);
 });
 
-test('more than 5% of tokens from unpriced models makes the cost a minimum', () => {
-  assert.equal(estimateQuality(input({ replies: 10, priced: 950_000, unpriced: 50_000 })).lowerBound, false);
-  assert.equal(estimateQuality(input({ replies: 10, priced: 940_000, unpriced: 60_000 })).lowerBound, true);
+test('tokens from a model with no price make the cost a minimum, however few they are', () => {
+  assert.equal(estimateQuality(input({ replies: 10, priced: 1_000_000 })).lowerBound, false);
+  assert.equal(estimateQuality(input({ replies: 10, priced: 1_000_000, unpriced: 1 })).lowerBound, true);
+  assert.equal(estimateQuality(input({ replies: 10, priced: 950_000, unpriced: 50_000 })).lowerBound, true);
 });
 
 test('the unfinished count can never exceed the replies', () => {

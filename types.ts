@@ -32,43 +32,12 @@ export interface UsageReport {
   };
 }
 
-export interface PlanPricing {
-  name: string;
-  provider: string;
-  type: 'subscription' | 'payg';
-  price_monthly_flat?: number;
-  pricing_model?: {
-    input_per_1m: number;
-    output_per_1m: number;
-    // Simple fallback for unknown models
-  };
-}
-
-export interface AnalysisResult {
-  currentMonthlyCost: number;
-  apiEquivalentCost: number;
-  savings: number;
-  isOverpaying: boolean;
-  recommendedPlan: string;
-  modelBreakdown: Array<{ name: string; value: number }>;
-}
-
 // Storage types for localStorage persistence
 export interface StoredReport {
   id: string;
   report: UsageReport;
   savedAt: string; // ISO Date string
-  name?: string;   // User-friendly label
-}
-
-export interface UserSettings {
-  currentPlan?: {
-    provider: string;
-    name: string;
-    price_usd: number;
-  };
-  theme?: 'light' | 'dark';
-  lastSyncedAt?: string;
+  name: string;    // The dates the report covers, so two reports are never named alike
 }
 
 // Trend analysis types
@@ -88,8 +57,10 @@ export interface UsageTrend {
   percentChange: number | null; // vs previous month; null when the latest month is too short to compare
   avgDailyCost: number;
   projectedMonthlyCost: number;
-  /** How many saved reports the figures use. Reports that overlap a newer one are left out. */
+  /** How many saved reports the figures use. Reports with no priced usage, and reports that overlap a newer one, are left out. */
   reportsUsed: number;
   /** True when some usage has no known price and is left out of the costs. */
   hasUnpriced: boolean;
+  /** True when any report used here has a pay-as-you-go cost that is only a minimum (cut-short replies or unpriced models). */
+  lowerBound: boolean;
 }

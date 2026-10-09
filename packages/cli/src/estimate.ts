@@ -11,9 +11,12 @@ export interface EstimateInput {
 }
 
 /**
- * When more than this share of the data is missing, the pay-as-you-go cost is a minimum, not an estimate.
- * Missing means: replies whose log never recorded how they ended (their output count may be cut short),
- * or tokens from models with no known price.
+ * When more than this share of the replies were logged before they finished, the pay-as-you-go cost is a
+ * minimum, not an estimate: those replies' output counts may be cut short. Up to this share the error is small
+ * next to the "tie" band below, which is why a few such replies do not turn the answer into a minimum.
+ *
+ * Tokens from a model with no known price are different. Nothing bounds what they would have cost (a new model can
+ * cost 50 times more than a cheap one), so ANY such token makes the cost a minimum.
  */
 export const MINIMUM_SHARE = 0.05;
 
@@ -47,7 +50,7 @@ export function estimateQuality(report: EstimateInput): EstimateQuality {
     pricedTokens,
     unpricedTokens,
     unpricedShare,
-    lowerBound: unfinishedShare > MINIMUM_SHARE || unpricedShare > MINIMUM_SHARE,
+    lowerBound: unfinishedShare > MINIMUM_SHARE || unpricedTokens > 0,
   };
 }
 
