@@ -15,6 +15,10 @@ if (!fs.existsSync(here('../web/index.html'))) {
   fail('packages/cli/web/index.html is missing. Run "npm run build:app" in the repo root first.');
 }
 
+if (!fs.existsSync(here('../web/THIRD_PARTY_NOTICES.txt'))) {
+  fail('packages/cli/web/THIRD_PARTY_NOTICES.txt is missing. Run "npm run build:app" in the repo root first.');
+}
+
 if (!fs.existsSync(here('../dist/index.js'))) {
   fail('packages/cli/dist/index.js is missing. Run "npm run build" in packages/cli first.');
 }

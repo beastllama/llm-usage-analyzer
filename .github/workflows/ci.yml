@@ -66,5 +66,6 @@ jobs:
           CLAUDE_CONFIG_DIR="$RUNNER_TEMP/none" ./node_modules/.bin/llm-usage-analyzer --no-open --port 3555 &
           sleep 3
           curl -sf http://localhost:3555/ | grep -q 'llm-usage-server'
+          curl -sf http://localhost:3555/THIRD_PARTY_NOTICES.txt | grep -q 'react@'
           curl -sI http://localhost:3555/ | grep -qi "content-security-policy: .*connect-src 'self'"
           test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3555/api/usage)" = "404"

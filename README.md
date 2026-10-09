@@ -135,3 +135,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+The page bundles open-source packages. Their licenses are in `THIRD_PARTY_NOTICES.txt`, which ships inside the npm package and is also served on the page at `/THIRD_PARTY_NOTICES.txt`.
