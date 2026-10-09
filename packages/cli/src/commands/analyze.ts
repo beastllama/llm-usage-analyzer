@@ -8,11 +8,14 @@ import { PLANS, PLAN_KEYS, costByModel } from '../pricing.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Calendar days covered, inclusive, on the user's clock. */
 function spanDays(start: string, end: string): number {
-  const s = new Date(start).getTime();
-  const e = new Date(end).getTime();
-  if (Number.isNaN(s) || Number.isNaN(e)) return 1;
-  return Math.max(1, Math.floor((e - s) / DAY_MS) + 1);
+  const s = new Date(start);
+  const e = new Date(end);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return 1;
+  const a = Date.UTC(s.getFullYear(), s.getMonth(), s.getDate());
+  const b = Date.UTC(e.getFullYear(), e.getMonth(), e.getDate());
+  return Math.max(1, Math.round((b - a) / DAY_MS) + 1);
 }
 
 const money = (n: number) => (n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`);
@@ -40,6 +43,12 @@ export const analyzeCommand = new Command('analyze')
     }
 
     const { cost, unpricedModels } = costByModel(report.usage.tokens.by_model);
+    const pricedModels = Object.keys(report.usage.tokens.by_model).length - unpricedModels.length;
+    if (pricedModels === 0) {
+      console.log(chalk.yellow(`\n   None of the models in this report have a known price: ${unpricedModels.join(', ')}`));
+      console.log(chalk.gray('   No plan comparison is shown, because it would have no basis.\n'));
+      return;
+    }
     const days = spanDays(report.period.start, report.period.end);
     const monthly = cost * (30 / days);
     const totalTokens = report.usage.tokens.input + report.usage.tokens.output;

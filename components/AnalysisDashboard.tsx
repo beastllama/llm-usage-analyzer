@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell
@@ -59,7 +59,10 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   }, [selectedPlan]);
 
   // A different report or plan makes the old AI answer stale
+  // Each request gets a number. A reply that arrives after the report or plan changed is ignored.
+  const requestRef = useRef(0);
   useEffect(() => {
+    requestRef.current++;
     setAiState({ status: 'idle' });
   }, [data, selectedPlan]);
 
@@ -97,8 +100,10 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   };
 
   const askAi = async () => {
+    const id = ++requestRef.current;
     setAiState({ status: 'loading' });
     const result: AiResult = await getGeminiRecommendation(aiKey, data, cmp, pattern);
+    if (id !== requestRef.current) return;
     if ('error' in result) {
       setAiState({ status: 'error', error: result.error });
     } else {

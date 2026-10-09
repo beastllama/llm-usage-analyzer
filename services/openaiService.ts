@@ -24,9 +24,18 @@ const USAGE_URL = 'https://api.openai.com/v1/organization/usage/completions';
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_PAGES = 100;
 
-/** Only follow pagination links that stay on OpenAI's usage endpoint. The admin key is never sent elsewhere. */
-export function isSafeNextPage(url: string): boolean {
-  return url.startsWith(USAGE_URL + '?') || url === USAGE_URL;
+/**
+ * The usage endpoint URL for one page. next_page is an opaque cursor, sent back as `page`
+ * with the same query. The admin key only ever goes to this fixed host.
+ */
+export function usageUrl(startDate: Date, endDate: Date, cursor?: string): string {
+  const url = new URL(USAGE_URL);
+  url.searchParams.set('start_time', Math.floor(startDate.getTime() / 1000).toString());
+  url.searchParams.set('end_time', Math.floor(endDate.getTime() / 1000).toString());
+  url.searchParams.set('bucket_width', '1d');
+  url.searchParams.set('group_by', 'model');
+  if (cursor) url.searchParams.set('page', cursor);
+  return url.toString();
 }
 
 /**
@@ -38,18 +47,11 @@ export async function fetchOpenAIUsage(
   startDate: Date,
   endDate: Date
 ): Promise<UsageReport> {
-  const url = new URL(USAGE_URL);
-  url.searchParams.set('start_time', Math.floor(startDate.getTime() / 1000).toString());
-  url.searchParams.set('end_time', Math.floor(endDate.getTime() / 1000).toString());
-  url.searchParams.set('bucket_width', '1d');
-  url.searchParams.set('group_by', 'model');
-
   const buckets: OpenAIUsageBucket[] = [];
-  let nextPage: string | null = url.toString();
-  let pages = 0;
+  let cursor: string | undefined;
 
-  while (nextPage && pages < MAX_PAGES) {
-    const response = await fetch(nextPage, {
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const response = await fetch(usageUrl(startDate, endDate, cursor), {
       headers: { 'Authorization': `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
@@ -61,12 +63,18 @@ export async function fetchOpenAIUsage(
 
     const data: OpenAIUsageResponse = await response.json();
     buckets.push(...data.data);
-    pages++;
 
-    nextPage = data.has_more && data.next_page && isSafeNextPage(data.next_page) ? data.next_page : null;
+    if (!data.has_more) {
+      return transformOpenAIResponse(buckets, startDate, endDate);
+    }
+    // Never return a short report silently: missing pages would undercount
+    if (!data.next_page) {
+      throw new Error('OpenAI reported more pages but gave no way to reach them. The report was not loaded.');
+    }
+    cursor = data.next_page;
   }
 
-  return transformOpenAIResponse(buckets, startDate, endDate);
+  throw new Error(`The date range needs more than ${MAX_PAGES} pages. Use a shorter range.`);
 }
 
 /**

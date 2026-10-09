@@ -69,7 +69,7 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 ## 🔒 Privacy
 
 - **Your Claude data stays on your computer.** The CLI reads `~/.claude/projects/` and never uploads it.
-- **The local server listens only on 127.0.0.1.** Only the dashboards you allow can read it. Other sites are blocked.
+- **The local server listens only on 127.0.0.1.** Only the dashboard's own ports (5173 and 4173) and addresses you add with `--origin` can read it. Other pages are refused.
 - **Dashboard analysis runs in your browser.**
 - **Optional AI tip:** off by default. If you turn it on and paste your own Gemini key, only these numbers go to Google: your plan, estimated cost, token totals, and active days. No file text, no messages.
 - **OpenAI import:** your admin key goes only to OpenAI.

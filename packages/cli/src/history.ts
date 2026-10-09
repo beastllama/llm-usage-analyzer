@@ -16,6 +16,22 @@ export function historyFile(): string {
   return path.join(historyDir(), 'history.json');
 }
 
+/**
+ * Combine stored days with this scan's days. When both have a day, keep the one with more replies,
+ * so a partial day never replaces a complete one.
+ */
+export function mergeForSave(
+  stored: Record<string, DayDetail>,
+  current: Record<string, DayDetail>,
+): Record<string, DayDetail> {
+  const out: Record<string, DayDetail> = { ...stored };
+  for (const [date, d] of Object.entries(current)) {
+    const old = stored[date];
+    if (!old || d.count >= old.count) out[date] = d;
+  }
+  return out;
+}
+
 export function loadHistory(file = historyFile()): Record<string, DayDetail> {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
@@ -52,13 +68,14 @@ export function addHistoryToReport(
     tokens.input += d.input;
     tokens.output += d.output;
     for (const [model, m] of Object.entries(d.by_model)) {
-      const t = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+      const t = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
       t.input += m.input;
       t.output += m.output;
       t.cache_read = (t.cache_read || 0) + m.cache_read;
       t.cache_write = (t.cache_write || 0) + m.cache_write;
+      t.cache_write_1h = (t.cache_write_1h || 0) + m.cache_write_1h;
       tokens.by_model[model] = t;
-      tokens.cached = (tokens.cached || 0) + m.cache_read + m.cache_write;
+      tokens.cached = (tokens.cached || 0) + m.cache_read + m.cache_write + m.cache_write_1h;
     }
     report.usage.messages.count += d.count;
     report.usage.messages.by_day.push({ date, count: d.count, input: d.input, output: d.output } as DayUsage);

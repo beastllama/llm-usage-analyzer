@@ -2,8 +2,8 @@ export interface TokenUsage {
   input: number;
   output: number;
   cached?: number;
-  // input excludes cache tokens; cache_read and cache_write are priced separately
-  by_model: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number }>;
+  // input excludes cache tokens; cache reads and writes are priced separately
+  by_model: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number; cache_write_1h?: number }>;
 }
 
 export interface UsageReport {

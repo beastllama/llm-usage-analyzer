@@ -1,14 +1,20 @@
 import { UsageReport } from "../types";
-import { PLANS, PlanKey, costByModel } from "./pricing";
+import { PLANS, PlanKey, costByModel, totalTokens } from "./pricing";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** Calendar days covered by the report, inclusive. Never less than 1. */
+/**
+ * Calendar days covered, inclusive, on the user's clock.
+ * Counts days, not hours, so 20:00 on day 1 to 08:00 on day 9 is 9 days.
+ */
 export function spanDays(start: string, end: string): number {
-  const s = new Date(start).getTime();
-  const e = new Date(end).getTime();
-  if (Number.isNaN(s) || Number.isNaN(e)) return 1;
-  return Math.max(1, Math.floor((e - s) / DAY_MS) + 1);
+  const s = new Date(start);
+  const e = new Date(end);
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return 1;
+  const a = Date.UTC(s.getFullYear(), s.getMonth(), s.getDate());
+  const b = Date.UTC(e.getFullYear(), e.getMonth(), e.getDate());
+  return Math.max(1, Math.round((b - a) / DAY_MS) + 1);
 }
 
 export interface MonthlyComparison {
@@ -37,7 +43,7 @@ export function calculateAnalysis(report: UsageReport, planKey: PlanKey): Monthl
   const apiCostMonthly = cost * (30 / periodDays);
   const planPrice = PLANS[planKey].price;
   const pricedTokens = Object.values(report.usage.tokens.by_model).reduce(
-    (sum, t) => sum + t.input + t.output + (t.cache_read || 0) + (t.cache_write || 0),
+    (sum, t) => sum + totalTokens(t),
     0,
   ) - unpricedTokens;
 

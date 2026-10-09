@@ -118,7 +118,9 @@ export const scanCommand = new Command('scan')
       // File does not exist yet, which is fine
     }
 
-    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2));
+    // Personal data, so only the owner can read it
+    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2), { mode: 0o600 });
+    fs.chmodSync(outputPath, 0o600);
 
     console.log('');
     console.log(chalk.gray('   ' + '─'.repeat(40)));

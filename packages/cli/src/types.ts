@@ -5,7 +5,7 @@ export interface TokenUsage {
   output: number;
   cached?: number;
   // input excludes cache tokens; cache_read and cache_write are priced separately
-  by_model: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number }>;
+  by_model: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number; cache_write_1h?: number }>;
 }
 
 export interface DayUsage {
@@ -54,6 +54,10 @@ export interface ClaudeMessage {
       output_tokens?: number;
       cache_creation_input_tokens?: number;
       cache_read_input_tokens?: number;
+      cache_creation?: {
+        ephemeral_5m_input_tokens?: number;
+        ephemeral_1h_input_tokens?: number;
+      };
     };
   };
 }

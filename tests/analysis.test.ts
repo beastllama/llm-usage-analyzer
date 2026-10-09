@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { calculateAnalysis, analyzeUsagePattern, spanDays } from '../services/analysisService.ts';
-import { priceFor, PLANS } from '../services/pricing.ts';
-import { getModelDistribution, calculateMonthlyTrends } from '../services/trendService.ts';
+import { priceFor, tokenCost, PLANS } from '../services/pricing.ts';
+import { getModelDistribution, calculateMonthlyTrends, pickNonOverlapping } from '../services/trendService.ts';
 import { csvCell } from '../services/exportService.ts';
-import { isSafeNextPage } from '../services/openaiService.ts';
+import { usageUrl } from '../services/openaiService.ts';
 import { aiPayloadPreview } from '../services/geminiService.ts';
 import { MOCK_DATA } from '../constants.ts';
 import type { UsageReport, StoredReport } from '../types.ts';
@@ -98,10 +98,18 @@ test('spreadsheet cells are quoted and formula triggers are neutralised', () => 
   assert.equal(csvCell(42), '42');
 });
 
-test('pagination only follows links that stay on OpenAI\'s usage endpoint', () => {
-  assert.equal(isSafeNextPage('https://api.openai.com/v1/organization/usage/completions?page=abc'), true);
-  assert.equal(isSafeNextPage('https://evil.example/collect'), false);
-  assert.equal(isSafeNextPage('https://api.openai.com.evil.example/v1/organization/usage/completions?page=1'), false);
+test('every OpenAI page keeps the same query, and the cursor goes in as `page`', () => {
+  const start = new Date('2026-10-01T00:00:00Z');
+  const end = new Date('2026-10-09T23:59:59Z');
+  const first = new URL(usageUrl(start, end));
+  assert.equal(first.origin + first.pathname, 'https://api.openai.com/v1/organization/usage/completions');
+  assert.equal(first.searchParams.has('page'), false);
+
+  const next = new URL(usageUrl(start, end, 'page_AAAA'));
+  assert.equal(next.origin + next.pathname, 'https://api.openai.com/v1/organization/usage/completions');
+  assert.equal(next.searchParams.get('page'), 'page_AAAA');
+  assert.equal(next.searchParams.get('start_time'), first.searchParams.get('start_time'));
+  assert.equal(next.searchParams.get('group_by'), 'model');
 });
 
 test('a model named __proto__ cannot pollute the distribution', () => {
@@ -143,4 +151,42 @@ test('the AI preview lists only numbers and plan names, never file text', () => 
   const lines = aiPayloadPreview(MOCK_DATA, cmp, analyzeUsagePattern(MOCK_DATA));
   assert.equal(lines.length, 4);
   assert.ok(lines[0].startsWith('Plan you chose: Claude Pro'));
+});
+
+test('span counts calendar days, not hours: 20:00 on day 1 to 08:00 on day 9 is 9 days', () => {
+  assert.equal(spanDays(new Date(2026, 9, 1, 20, 0).toISOString(), new Date(2026, 9, 9, 8, 0).toISOString()), 9);
+  assert.equal(spanDays(new Date(2026, 9, 3, 20, 0).toISOString(), new Date(2026, 9, 9, 8, 0).toISOString()), 7);
+});
+
+test('o1 variants are not priced at the o1 rate, because no verified price is known', () => {
+  assert.equal(priceFor('o1-mini-2024-09-12'), null);
+  assert.equal(priceFor('o1-preview')?.input ?? null, null);
+  assert.equal(priceFor('o1-2024-12-17')?.input, 15);
+});
+
+test('1-hour cache writes are priced at 2x input, not at the 5-minute rate', () => {
+  const p = priceFor('claude-sonnet-5-5')!;
+  assert.equal(p.cacheWrite1h, 4);
+  const r = tokenCost('claude-sonnet-5-5', { input: 0, output: 0, cache_write_1h: 1_000_000 });
+  assert.ok(Math.abs(r.cost - 4) < 1e-9, `expected $4 for 1M 1-hour writes, got ${r.cost}`);
+});
+
+test('a report saved twice (same days) is counted once in the trends', () => {
+  const day = (date: string) => ({ date, count: 1, input: 100, output: 0 });
+  const older: StoredReport = {
+    id: 'old', savedAt: '2026-10-05T00:00:00.000Z', name: 'old',
+    report: report({ period: { start: '2026-10-01T00:00:00Z', end: '2026-10-05T00:00:00Z' }, usage: { ...MOCK_DATA.usage, tokens: { input: 300, output: 0, by_model: { 'claude-opus-5-5': { input: 300, output: 0 } } }, messages: { count: 3, by_day: [day('2026-10-01'), day('2026-10-02'), day('2026-10-03')] } } } as Partial<UsageReport>),
+  };
+  const newer: StoredReport = {
+    id: 'new', savedAt: '2026-10-09T00:00:00.000Z', name: 'new',
+    report: report({ period: { start: '2026-10-01T00:00:00Z', end: '2026-10-09T00:00:00Z' }, usage: { ...MOCK_DATA.usage, tokens: { input: 900, output: 0, by_model: { 'claude-opus-5-5': { input: 900, output: 0 } } }, messages: { count: 9, by_day: [1,2,3,4,5,6,7,8,9].map(n => day('2026-10-0' + n)) } } } as Partial<UsageReport>),
+  };
+  assert.deepEqual(pickNonOverlapping([older, newer]).map(s => s.id), ['new']);
+  const totals = calculateMonthlyTrends([older, newer]);
+  assert.equal(totals[0].messageCount, 9, 'nine days, each once');
+  assert.equal(getModelDistribution([older, newer])[0].tokens, 900);
+});
+
+test('the OpenAI cursor, not a URL, is what pages through the results', () => {
+  assert.match(usageUrl(new Date('2026-10-01T00:00:00Z'), new Date('2026-10-09T00:00:00Z'), 'page_xyz'), /[?&]page=page_xyz/);
 });

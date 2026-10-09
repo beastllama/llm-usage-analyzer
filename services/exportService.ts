@@ -56,7 +56,7 @@ export function exportModelBreakdownToCSV(report: UsageReport, filename?: string
       tokens.input,
       tokens.output,
       tokens.cache_read || 0,
-      tokens.cache_write || 0,
+      (tokens.cache_write || 0) + (tokens.cache_write_1h || 0),
       cost.toFixed(4),
       priced ? 'yes' : 'no',
     ];
@@ -86,8 +86,8 @@ function generateCSV(report: UsageReport): string {
   lines.push(`Total Input Tokens,${report.usage.tokens.input}`);
   lines.push(`Total Output Tokens,${report.usage.tokens.output}`);
   lines.push(`Total Tokens,${report.usage.tokens.input + report.usage.tokens.output}`);
-  lines.push(`Cache Tokens,${report.usage.tokens.cached || 0}`);
-  lines.push(`Replies,${report.usage.messages.count}`);
+  lines.push(`Cache Tokens,${csvCell(Number(report.usage.tokens.cached) || 0)}`);
+  lines.push(`Replies,${csvCell(Number(report.usage.messages.count) || 0)}`);
   lines.push(`Estimated Cost (USD),${cost.toFixed(2)}`);
   lines.push('');
 
@@ -117,11 +117,10 @@ function generateCSV(report: UsageReport): string {
 export function exportToPDF(report: UsageReport): void {
   const html = generatePDFHTML(report);
 
-  const printWindow = window.open('', '_blank');
-  if (printWindow) {
-    printWindow.document.write(html);
-    printWindow.document.close();
-  }
+  // A blob page opened with noopener cannot reach the app window
+  const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  window.open(url, '_blank', 'noopener');
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 /**
@@ -149,7 +148,7 @@ function generatePDFHTML(report: UsageReport): string {
   const dayRows = report.usage.messages.by_day.slice(-10).reverse().map(day => `
           <tr>
             <td>${escapeHtml(day.date)}</td>
-            <td class="number">${day.count}</td>
+            <td class="number">${formatNumberWithCommas(day.count)}</td>
             <td class="number">${formatNumberWithCommas(day.input)}</td>
             <td class="number">${formatNumberWithCommas(day.output)}</td>
           </tr>`).join('');
@@ -314,8 +313,10 @@ function formatDate(date: Date): string {
   return date.toISOString().split('T')[0];
 }
 
-function formatNumberWithCommas(num: number): string {
-  return num.toLocaleString();
+/** Only real numbers are formatted. Anything else becomes 0, so text from a file never reaches the page. */
+function formatNumberWithCommas(num: unknown): string {
+  const n = Number(num);
+  return Number.isFinite(n) ? n.toLocaleString() : "0";
 }
 
 function escapeHtml(value: string): string {

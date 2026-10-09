@@ -35,3 +35,8 @@ test('plan multipliers match Anthropic\'s published allowances', () => {
   assert.equal(PLANS['Claude Max 5x'].multiplier, 5);
   assert.equal(PLANS['Claude Max 20x'].multiplier, 20);
 });
+
+test('o1 variants without a verified price are unpriced rather than given the o1 rate', () => {
+  assert.equal(priceFor('o1-mini-2024-09-12'), null);
+  assert.equal(priceFor('o1-2024-12-17')?.input, 15);
+});

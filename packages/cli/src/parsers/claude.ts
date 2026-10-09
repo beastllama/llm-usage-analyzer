@@ -15,7 +15,7 @@ export interface DayDetail {
   count: number;
   input: number;
   output: number;
-  by_model: Record<string, { input: number; output: number; cache_read: number; cache_write: number }>;
+  by_model: Record<string, { input: number; output: number; cache_read: number; cache_write: number; cache_write_1h: number }>;
 }
 
 /** Where Claude Code keeps its data. CLAUDE_CONFIG_DIR overrides ~/.claude, as in Claude Code itself. */
@@ -181,19 +181,27 @@ export async function scanClaudeUsage(
       const input = msg.usage.input_tokens || 0;
       const output = msg.usage.output_tokens || 0;
       const cacheRead = msg.usage.cache_read_input_tokens || 0;
-      const cacheWrite = msg.usage.cache_creation_input_tokens || 0;
+      // Writes are split by cache lifetime when the log says so (1-hour writes cost more).
+      // Older logs have no split, so every write is treated as 5-minute.
+      const creation = msg.usage.cache_creation;
+      const cacheWriteAll = msg.usage.cache_creation_input_tokens || 0;
+      const cacheWrite1h = creation?.ephemeral_1h_input_tokens || 0;
+      const cacheWrite = creation
+        ? (creation.ephemeral_5m_input_tokens ?? Math.max(0, cacheWriteAll - cacheWrite1h))
+        : cacheWriteAll;
       const model = msg.model || 'unknown';
 
       const tokens = report.usage.tokens;
       tokens.input += input;
       tokens.output += output;
-      tokens.cached = (tokens.cached || 0) + cacheRead + cacheWrite;
+      tokens.cached = (tokens.cached || 0) + cacheRead + cacheWrite + cacheWrite1h;
 
-      const modelTotals = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+      const modelTotals = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
       modelTotals.input += input;
       modelTotals.output += output;
       modelTotals.cache_read = (modelTotals.cache_read || 0) + cacheRead;
       modelTotals.cache_write = (modelTotals.cache_write || 0) + cacheWrite;
+      modelTotals.cache_write_1h = (modelTotals.cache_write_1h || 0) + cacheWrite1h;
       tokens.by_model[model] = modelTotals;
 
       report.usage.messages.count++;
@@ -209,11 +217,12 @@ export async function scanClaudeUsage(
         detail.count++;
         detail.input += input;
         detail.output += output;
-        const dm = detail.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0 };
+        const dm = detail.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
         dm.input += input;
         dm.output += output;
         dm.cache_read += cacheRead;
         dm.cache_write += cacheWrite;
+        dm.cache_write_1h += cacheWrite1h;
         detail.by_model[model] = dm;
         dayDetail[day] = detail;
       }

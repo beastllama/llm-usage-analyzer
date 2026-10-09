@@ -8,15 +8,13 @@ const DEFAULT_PORT = 3456;
 // Listens on loopback only, so other computers on the network cannot reach it
 const BIND_HOST = '127.0.0.1';
 
-// Pages allowed to read the data: the dashboard's local dev and preview servers.
-// Add your own dashboard origin with --origin.
+// Pages allowed to read the data: only the dashboard's own dev and preview ports.
+// Any other local page is refused. Add a dashboard elsewhere with --origin.
 export const DEFAULT_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:4173',
-  'http://localhost:3000',
   'http://127.0.0.1:5173',
   'http://127.0.0.1:4173',
-  'http://127.0.0.1:3000',
 ];
 
 /** Only allow the Host header this server actually answers to. Blocks DNS-rebinding attacks. */

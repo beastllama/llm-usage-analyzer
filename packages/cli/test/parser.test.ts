@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { scanClaudeUsage, localDayKey, parseLocalDate } from '../src/parsers/claude.ts';
-import { addHistoryToReport } from '../src/history.ts';
+import { addHistoryToReport, mergeForSave } from '../src/history.ts';
 
 let dir: string;
 let previous: string | undefined;
@@ -100,4 +100,35 @@ test('saved history fills in days that the transcripts no longer have', async ()
   assert.equal(report.usage.tokens.input, 5 + 40);
   assert.equal(report.usage.messages.by_day[0].date, '2026-09-01');
   assert.equal(report.usage.tokens.by_model['claude-opus-5-5'].input, 40);
+});
+
+test('cache writes are split by lifetime when the log has the breakdown', async () => {
+  writeTranscript('s1.jsonl', [
+    reply('m1', '2026-10-01T10:00:00.000Z', 'claude-sonnet-5-5', {
+      input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 500, cache_read_input_tokens: 0,
+    }),
+    {
+      sessionId: 's1', timestamp: '2026-10-01T10:01:00.000Z',
+      message: { id: 'm2', model: 'claude-sonnet-5-5', usage: {
+        input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: 500,
+        cache_creation: { ephemeral_5m_input_tokens: 200, ephemeral_1h_input_tokens: 300 },
+      } },
+    },
+  ]);
+  const { report } = await scanClaudeUsage({});
+  const m = report.usage.tokens.by_model['claude-sonnet-5-5'];
+  // m1 has no split, so its 500 are 5-minute. m2 is 200 five-minute plus 300 one-hour.
+  assert.equal(m.cache_write, 700);
+  assert.equal(m.cache_write_1h, 300);
+  assert.equal(report.usage.tokens.cached, 1000);
+});
+
+test('saving keeps the fuller copy of a day, so a partial day never overwrites a complete one', () => {
+  const full = { count: 10, input: 100, output: 10, by_model: {} };
+  const partial = { count: 3, input: 30, output: 3, by_model: {} };
+  const merged = mergeForSave({ '2026-10-02': full }, { '2026-10-02': partial, '2026-10-03': partial });
+  assert.equal(merged['2026-10-02'].count, 10);
+  assert.equal(merged['2026-10-03'].count, 3);
+  const upgraded = mergeForSave({ '2026-10-02': partial }, { '2026-10-02': full });
+  assert.equal(upgraded['2026-10-02'].count, 10);
 });

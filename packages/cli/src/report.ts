@@ -1,6 +1,8 @@
 import type { ScanOptions, UsageReport } from './types.js';
-import { scanClaudeUsage, ParseProgress, DayDetail } from './parsers/claude.js';
-import { loadHistory, saveHistory, addHistoryToReport } from './history.js';
+import { scanClaudeUsage, localDayKey, ParseProgress, DayDetail } from './parsers/claude.js';
+import { loadHistory, saveHistory, addHistoryToReport, mergeForSave } from './history.js';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface BuiltReport {
   report: UsageReport;
@@ -30,8 +32,11 @@ export async function buildReport(
   }
 
   if (options.save) {
-    // Days from this scan are complete, so they replace what was saved before
-    saveHistory({ ...stored, ...dayDetail });
+    // Only complete days are saved. Today is still open, and a --days window starts partway through its first day.
+    const incomplete = new Set<string>([localDayKey(new Date())]);
+    if (options.days) incomplete.add(localDayKey(new Date(Date.now() - options.days * DAY_MS)));
+    const complete = Object.fromEntries(Object.entries(dayDetail).filter(([day]) => !incomplete.has(day)));
+    saveHistory(mergeForSave(stored, complete));
   }
 
   return { report, progress, historyDaysAdded };

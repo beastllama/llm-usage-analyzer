@@ -11,6 +11,24 @@ function calculateReportCost(report: UsageReport): number {
 const monthOf = (dayKey: string) => dayKey.slice(0, 7);
 
 /**
+ * Saved uploads often cover the same days (a cumulative scan uploaded twice).
+ * Newest first, keep a report only if none of its days is already counted.
+ * So no day is ever counted twice. An older report that shares a day with a newer one is left out.
+ */
+export function pickNonOverlapping(reports: StoredReport[]): StoredReport[] {
+  const newestFirst = [...reports].sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+  const covered = new Set<string>();
+  const picked: StoredReport[] = [];
+  for (const stored of newestFirst) {
+    const days = stored.report.usage.messages.by_day.map(d => d.date);
+    if (days.some(d => covered.has(d))) continue;
+    days.forEach(d => covered.add(d));
+    picked.push(stored);
+  }
+  return picked;
+}
+
+/**
  * Group stored reports by the month of each day they cover.
  * A report that spans two months is counted in both, not dumped into its start month.
  */
@@ -33,7 +51,8 @@ export function groupReportsByMonth(reports: StoredReport[]): Map<string, Stored
  * Monthly totals. Each report's cost is split across its days by token share,
  * so a report that spans two months is split between them.
  */
-export function calculateMonthlyTrends(reports: StoredReport[]): TrendData[] {
+export function calculateMonthlyTrends(allReports: StoredReport[]): TrendData[] {
+  const reports = pickNonOverlapping(allReports);
   const months = new Map<string, TrendData & { reportIds: Set<string> }>();
 
   const bucket = (monthKey: string) => {
@@ -87,7 +106,8 @@ const MIN_DAYS_TO_COMPARE = 20;
  * Calculate usage trend analysis.
  * percentChange is null when the latest month is too short to compare fairly.
  */
-export function analyzeUsageTrends(reports: StoredReport[]): UsageTrend | null {
+export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | null {
+  const reports = pickNonOverlapping(allReports);
   if (reports.length === 0) return null;
 
   const monthlyData = calculateMonthlyTrends(reports);
@@ -118,12 +138,14 @@ export function analyzeUsageTrends(reports: StoredReport[]): UsageTrend | null {
 /**
  * Get daily usage breakdown across all reports
  */
-export function getDailyBreakdown(reports: StoredReport[]): Array<{
+export function getDailyBreakdown(allReports: StoredReport[]): Array<{
   date: string;
   tokens: number;
   cost: number;
   messages: number;
 }> {
+  const reports = pickNonOverlapping(allReports);
+
   const dayMap = new Map<string, { tokens: number; cost: number; messages: number }>();
 
   for (const stored of reports) {
@@ -152,11 +174,13 @@ export function getDailyBreakdown(reports: StoredReport[]): Array<{
 /**
  * Get usage heatmap by day of week
  */
-export function getWeekdayHeatmap(reports: StoredReport[]): Array<{
+export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
   day: string;
   avgTokens: number;
   avgMessages: number;
 }> {
+  const reports = pickNonOverlapping(allReports);
+
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const dayStats = dayNames.map(() => ({ totalTokens: 0, totalMessages: 0, count: 0 }));
 
@@ -183,12 +207,14 @@ export function getWeekdayHeatmap(reports: StoredReport[]): Array<{
  * Calculate model usage distribution across all reports.
  * Uses a Map so model names like "__proto__" are safe keys.
  */
-export function getModelDistribution(reports: StoredReport[]): Array<{
+export function getModelDistribution(allReports: StoredReport[]): Array<{
   model: string;
   tokens: number;
   cost: number;
   percentage: number;
 }> {
+  const reports = pickNonOverlapping(allReports);
+
   const modelStats = new Map<string, { input: number; output: number; cost: number }>();
   let totalTokens = 0;
 

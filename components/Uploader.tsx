@@ -142,7 +142,8 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
       if (created < minDate) minDate = created;
       if (created > maxDate) maxDate = created;
 
-      const dateKey = created.toISOString().split('T')[0];
+      // Local calendar day, like the CLI, so a conversation is not moved to the wrong day
+      const dateKey = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, '0')}-${String(created.getDate()).padStart(2, '0')}`;
       if (!dayMap[dateKey]) dayMap[dateKey] = { count: 0, input: 0, output: 0 };
 
       const messages = conversation.chat_messages || [];
@@ -154,11 +155,12 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
           usage.usage.tokens.input += tokens;
           dayMap[dateKey].input += tokens;
         } else {
+          // A reply is one assistant message, the same meaning the CLI uses
           usage.usage.tokens.output += tokens;
           dayMap[dateKey].output += tokens;
+          dayMap[dateKey].count++;
+          usage.usage.messages.count++;
         }
-        dayMap[dateKey].count++;
-        usage.usage.messages.count++;
       });
     });
 
@@ -192,7 +194,18 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
     typeof json.period.start === 'string' &&
     typeof json.period.end === 'string' &&
     json.plan &&
-    typeof json.plan.price_usd === 'number';
+    typeof json.plan.price_usd === 'number' &&
+    // Every number the dashboard and exports will show must really be a number
+    Object.values(json.usage.tokens.by_model).every((m: any) =>
+      m && Number.isFinite(m.input) && Number.isFinite(m.output) &&
+      (m.cache_read === undefined || Number.isFinite(m.cache_read)) &&
+      (m.cache_write === undefined || Number.isFinite(m.cache_write)) &&
+      (m.cache_write_1h === undefined || Number.isFinite(m.cache_write_1h))
+    ) &&
+    json.usage.messages.by_day.every((d: any) =>
+      d && typeof d.date === 'string' && Number.isFinite(d.count) && Number.isFinite(d.input) && Number.isFinite(d.output)
+    ) &&
+    Number.isFinite(json.usage.messages.count);
 
   const processFile = async (file: File) => {
     setError(null);
