@@ -58,7 +58,7 @@ const PlanFitAnalyzer: React.FC<UsagePatternPanelProps> = ({ data }) => {
       </div>
 
       <div className="flex gap-3 bg-indigo-500/10 border border-indigo-500/20 rounded-xl p-4 text-sm text-slate-300">
-        <Info className="w-5 h-5 text-indigo-300 flex-shrink-0 mt-0.5" />
+        <Info className="w-5 h-5 text-indigo-300 shrink-0 mt-0.5" />
         <p>
           Want to see your real limit? On Pro or Max, run <code className="text-indigo-200">llm-usage statusline</code> once.
           It records your live 5-hour and weekly percentages, then <code className="text-indigo-200">llm-usage limits</code> shows the downgrade check.

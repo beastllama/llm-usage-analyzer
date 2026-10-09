@@ -403,7 +403,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                   onChange={(e) => setAiKey(e.target.value)}
                   autoComplete="off"
                   spellCheck={false}
-                  className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
                 />
                 <button
                   type="button"

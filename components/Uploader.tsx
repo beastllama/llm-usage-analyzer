@@ -352,13 +352,13 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
         <div className="text-center space-y-6 pt-8 mb-16 animate-in fade-in slide-in-from-top-8 duration-700">
           
           {/* Security Badge */}
-          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium mb-4 backdrop-blur-sm shadow-[0_0_15px_rgba(16,185,129,0.1)]">
+          <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium mb-4 backdrop-blur-xs shadow-[0_0_15px_rgba(16,185,129,0.1)]">
             <ShieldCheck className="w-3 h-3" />
             <span>Privacy First: Analysis runs locally in your browser</span>
           </div>
 
-          <h1 className="text-5xl md:text-6xl font-bold tracking-tight text-white drop-shadow-sm">
-            Analyze your <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400">AI Spending</span>
+          <h1 className="text-5xl md:text-6xl font-bold tracking-tight text-white drop-shadow-xs">
+            Analyze your <span className="text-transparent bg-clip-text bg-linear-to-r from-indigo-400 via-purple-400 to-pink-400">AI Spending</span>
           </h1>
           <p className="text-slate-400 text-lg max-w-2xl mx-auto leading-relaxed">
             Connect your usage data to visualize costs, find hidden patterns, and determine if you should switch to pay-as-you-go.
@@ -408,7 +408,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-8 duration-500">
                 {/* Local Server Banner on Home */}
                 {localServerStatus === 'available' && (
-                  <div className="p-5 bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border border-emerald-500/30 rounded-xl shadow-lg">
+                  <div className="p-5 bg-linear-to-r from-emerald-500/10 to-teal-500/10 border border-emerald-500/30 rounded-xl shadow-lg">
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex items-center gap-4">
                         <div className="p-3 bg-emerald-500/20 rounded-xl">
@@ -568,7 +568,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                 )}
 
                 {localServerStatus === 'unavailable' && (
-                  <div className="p-5 bg-gradient-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/30 rounded-xl">
+                  <div className="p-5 bg-linear-to-r from-indigo-500/10 to-purple-500/10 border border-indigo-500/30 rounded-xl">
                     <div className="flex items-start gap-4">
                       <div className="p-2.5 bg-indigo-500/20 rounded-lg shrink-0">
                         <Server className="w-6 h-6 text-indigo-400" />
@@ -626,7 +626,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                       <FileJson className="w-5 h-5 text-slate-400" />
                       <div className="flex-1">
                         <span className="text-slate-300 font-medium">Alternative: Export to JSON file</span>
-                        <p className="text-xs text-slate-500 mt-0.5">Use <code className="bg-slate-800 px-1.5 py-0.5 rounded">llm-usage scan</code> instead</p>
+                        <p className="text-xs text-slate-500 mt-0.5">Use <code className="bg-slate-800 px-1.5 py-0.5 rounded-sm">llm-usage scan</code> instead</p>
                       </div>
                       <ChevronRight className="w-4 h-4 text-slate-500 group-open:rotate-90 transition-transform" />
                     </div>
@@ -634,11 +634,11 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                   <div className="mt-4 space-y-3 pl-4 border-l-2 border-slate-700/50">
                     <div className="flex items-center gap-4 p-3 rounded-lg bg-slate-800/30 border border-slate-700/50">
                       <div className="w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs">1</div>
-                      <p className="text-sm text-slate-300">Run <code className="bg-slate-800 px-1.5 py-0.5 rounded text-emerald-400">llm-usage scan</code> in terminal</p>
+                      <p className="text-sm text-slate-300">Run <code className="bg-slate-800 px-1.5 py-0.5 rounded-sm text-emerald-400">llm-usage scan</code> in terminal</p>
                     </div>
                     <div className="flex items-center gap-4 p-3 rounded-lg bg-slate-800/30 border border-slate-700/50">
                       <div className="w-6 h-6 rounded-full bg-indigo-500/20 text-indigo-400 flex items-center justify-center font-bold text-xs">2</div>
-                      <p className="text-sm text-slate-300">Drag the generated <code className="bg-slate-800 px-1.5 py-0.5 rounded">usage_report.json</code> below</p>
+                      <p className="text-sm text-slate-300">Drag the generated <code className="bg-slate-800 px-1.5 py-0.5 rounded-sm">usage_report.json</code> below</p>
                     </div>
                   </div>
                 </details>
@@ -679,7 +679,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                         autoComplete="off"
                         spellCheck={false}
                         disabled={isLoading}
-                        className="w-full bg-slate-950/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder:text-slate-600 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-none transition-all disabled:opacity-50"
+                        className="w-full bg-slate-950/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder:text-slate-600 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-hidden transition-all disabled:opacity-50"
                       />
                     </div>
 
@@ -694,7 +694,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                           value={dateRange.start}
                           onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
                           disabled={isLoading}
-                          className="w-full bg-slate-950/50 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-none disabled:opacity-50"
+                          className="w-full bg-slate-950/50 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-hidden disabled:opacity-50"
                         />
                       </div>
                       <div>
@@ -707,7 +707,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                           value={dateRange.end}
                           onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
                           disabled={isLoading}
-                          className="w-full bg-slate-950/50 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-none disabled:opacity-50"
+                          className="w-full bg-slate-950/50 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-hidden disabled:opacity-50"
                         />
                       </div>
                     </div>
@@ -730,7 +730,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                     <button
                       type="submit"
                       disabled={isLoading || !apiKey}
-                      className="w-full py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl font-bold shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+                      className="w-full py-3 bg-linear-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl font-bold shadow-lg shadow-emerald-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {isLoading ? (
                         <>
