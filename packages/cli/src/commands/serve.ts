@@ -15,7 +15,7 @@ const PORT_TRIES = 20;
 const BIND_HOST = '127.0.0.1';
 
 // Pages allowed to read the data from another address: only the dashboard's own dev and preview ports.
-// Any other local page is refused. Add a dashboard elsewhere with --origin.
+// Any other page is refused. Add a self-hosted dashboard address with --origin.
 export const DEFAULT_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:4173',
@@ -116,7 +116,7 @@ export interface StartOptions {
   /** Port to use. Leave out to use 3456, moving up if it is busy. Use 0 for any free port. */
   port?: number;
   days?: number;
-  /** Extra dashboard addresses allowed to read data (when the page is hosted somewhere else). */
+  /** Extra dashboard addresses allowed to read data (advanced: a dashboard you host yourself). */
   origins?: string[];
   /** Folder with the built dashboard. null = serve only the data. */
   webDir?: string | null;
@@ -335,10 +335,10 @@ export async function launch(options: LaunchOptions): Promise<void> {
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
 export const serveCommand = new Command('serve')
-  .description('Start the local server without opening a browser (for the dev dashboard or a hosted copy)')
+  .description('Start the local server without opening a browser (for developing the dashboard)')
   .option('-p, --port <number>', `Port to listen on (default: ${DEFAULT_PORT})`, (v) => parseInt(v, 10))
   .option('-d, --days <number>', 'Only include the last N days', (v) => parseInt(v, 10))
-  .option('--origin <url>', 'Extra dashboard address allowed to read data (repeatable)', collect, [])
+  .option('--origin <url>', 'Advanced: extra dashboard address allowed to read data (repeatable)', collect, [])
   .action(async (options: { port?: number; days?: number; origin: string[] }) => {
     await launch({ port: options.port ?? DEFAULT_PORT, days: options.days, origins: options.origin, open: false });
   });

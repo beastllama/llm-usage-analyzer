@@ -45,10 +45,16 @@ CI runs the same checks on every pull request.
 
 ## 📦 Releasing (maintainers)
 
-1. Raise `version` in `packages/cli/package.json`, merge to `main`.
-2. Actions → **Publish to npm** → Run workflow. (Or push a tag that matches, like `v1.2.1`.)
-3. One-time: the `NPM_TOKEN` repository secret (an npm automation token).
-4. Pages: Settings → Pages → Source: **GitHub Actions**. Then Actions → **Deploy dashboard** → Re-run.
+Publishing is done by hand from your own computer. No GitHub Actions, no stored token.
+
+1. Raise `version` in `packages/cli/package.json`. Merge to `main`.
+2. `git pull && npm install`
+3. `npm login` (once; npm asks for your 2FA code)
+4. `npm run release:check` is a dry run. It lists exactly what would be published.
+5. `npm run release` publishes.
+6. Optional: `git tag v1.2.1 && git push origin v1.2.1` to mark the release.
+
+The demo site is a Vercel project linked to this repo. It redeploys on every push to `main`.
 
 ## 🐛 Reporting bugs
 

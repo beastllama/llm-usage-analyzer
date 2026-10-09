@@ -12,11 +12,9 @@ npx llm-usage-analyzer
 ```
 
 Your browser opens with the answer. Needs [Node 22.12+](https://nodejs.org) and Claude Code history on the same computer.
-No login. No API key. Nothing to install first.
+No login. No API key. Nothing to install first. (npx may ask `Ok to proceed?` the first time. Type `y`.)
 
 **Use claude.ai in the browser, not Claude Code?** Run the same command, choose *I use claude.ai in my browser*, and drop in your chat export. Steps are on the page.
-
-**Just curious?** Open the demo: <https://beastllama.github.io/llm-usage-analyzer/> (after Pages is switched on, see below).
 
 ---
 
@@ -28,16 +26,6 @@ npm install -g llm-usage-analyzer      # once
 llm-usage scan                         # reads your Claude Code history, writes usage_report.json
 llm-usage analyze                      # compares pay-as-you-go with each plan
 ```
-
----
-
-## 🌐 Hosted demo (optional)
-
-The page can also be served from GitHub Pages. It is a demo and a landing page: your data is never uploaded there.
-
-- One-time setup: Settings → Pages → Source: **GitHub Actions**. `.github/workflows/pages.yml` then publishes it after each merge to `main`.
-- To use your own history from the hosted page, run `npx llm-usage-analyzer serve --origin https://beastllama.github.io` and keep it running. The browser then lets that page read your local server, and nothing else.
-- Simpler: use the `npx llm-usage-analyzer` page. It is served from your own computer and the browser blocks it from sending data anywhere else.
 
 ---
 
@@ -70,7 +58,7 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 | `llm-usage statusline` | Claude Code status line. Shows live % and saves it |
 | `llm-usage limits --plan pro` | Downgrade check from your saved readings |
 | `llm-usage-analyzer` | Opens the dashboard on your own history (same as `npx llm-usage-analyzer`) |
-| `llm-usage serve` | Local server only, no browser. For the dev dashboard or a hosted copy |
+| `llm-usage serve` | Local server only, no browser. For developing the dashboard |
 
 ---
 
@@ -109,7 +97,7 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 |---|---|
 | `CLAUDE_CONFIG_DIR` | Use a different Claude Code folder (default `~/.claude`) |
 | `LLM_USAGE_HOME` | Where history and limit readings are saved (default `~/.llm-usage`) |
-| `llm-usage serve --origin https://your.site` | Let another dashboard address read the local server |
+| `llm-usage serve --origin https://your.site` | Advanced: let a dashboard you host yourself read the local server |
 
 ---
 

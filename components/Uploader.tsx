@@ -6,7 +6,7 @@ import {
 import { UsageReport } from '../types';
 import { parseUsageFile } from '../services/fileImport';
 import { copyText } from '../services/shareService';
-import { LOCAL_SERVER_URL, servedByCli } from '../services/localServer';
+import { LOCAL_SERVER_URL, servedByCli, pageIsLocal } from '../services/localServer';
 
 const RUN_COMMAND = 'npx llm-usage-analyzer';
 
@@ -28,9 +28,10 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialEr
   const [serverLoading, setServerLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // If a local server is already running (the page is hosted somewhere else), offer to load from it
+  // Dev server on this computer: if the local server is running, offer to load from it.
+  // A page on a public host never probes localhost (the browser would ask the visitor for permission).
   useEffect(() => {
-    if (view !== 'main' || servedByCli) return;
+    if (view !== 'main' || servedByCli || !pageIsLocal) return;
     let cancelled = false;
     (async () => {
       try {

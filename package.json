@@ -12,7 +12,9 @@
     "serve": "node packages/cli/dist/index.js serve",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts",
-    "build:app": "vite build --outDir packages/cli/web --emptyOutDir"
+    "build:app": "vite build --outDir packages/cli/web --emptyOutDir",
+    "release:check": "npm whoami && npm run typecheck && npm test && npm run build:app && cd packages/cli && npm install && npm run build && npm publish --dry-run",
+    "release": "npm whoami && npm run typecheck && npm test && npm run build:app && cd packages/cli && npm install && npm run build && npm publish --access public"
   },
   "dependencies": {
     "@fontsource-variable/inter": "^5.3.0",
@@ -34,5 +36,8 @@
     "typescript": "~5.8.2",
     "vite": "^8.3.4"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.12.0"
+  }
 }

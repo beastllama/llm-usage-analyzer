@@ -1,0 +1,2 @@
+# Same line endings on every computer. A Windows checkout must not put CR into the CLI's first line (#!/usr/bin/env node).
+* text=auto eol=lf
