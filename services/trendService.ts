@@ -1,115 +1,117 @@
 import { StoredReport, TrendData, UsageTrend, UsageReport } from '../types';
-import { MODEL_PRICING } from '../constants';
+import { costByModel, tokenCost } from './pricing';
+import { spanDays } from './analysisService';
 
-/**
- * Calculate cost for a usage report
- */
+/** Cost of a report, summed by model at list prices. */
 function calculateReportCost(report: UsageReport): number {
-  let totalCost = 0;
-
-  for (const [model, tokens] of Object.entries(report.usage.tokens.by_model)) {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    const inputCost = (tokens.input / 1_000_000) * pricing.input;
-    const outputCost = (tokens.output / 1_000_000) * pricing.output;
-    totalCost += inputCost + outputCost;
-  }
-
-  return totalCost;
+  return costByModel(report.usage.tokens.by_model).cost;
 }
 
+/** Month key (YYYY-MM) for a day key (YYYY-MM-DD). Day keys are already calendar dates, so no timezone shift. */
+const monthOf = (dayKey: string) => dayKey.slice(0, 7);
+
 /**
- * Group stored reports by month
+ * Group stored reports by the month of each day they cover.
+ * A report that spans two months is counted in both, not dumped into its start month.
  */
 export function groupReportsByMonth(reports: StoredReport[]): Map<string, StoredReport[]> {
   const grouped = new Map<string, StoredReport[]>();
 
   for (const stored of reports) {
-    const date = new Date(stored.report.period.start);
-    const monthKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
-    if (!grouped.has(monthKey)) {
-      grouped.set(monthKey, []);
+    const months = new Set(stored.report.usage.messages.by_day.map(d => monthOf(d.date)));
+    if (months.size === 0) months.add(monthOf(stored.report.period.start.slice(0, 10)));
+    for (const monthKey of months) {
+      if (!grouped.has(monthKey)) grouped.set(monthKey, []);
+      grouped.get(monthKey)!.push(stored);
     }
-    grouped.get(monthKey)!.push(stored);
   }
 
   return grouped;
 }
 
 /**
- * Calculate monthly trend data from stored reports
+ * Monthly totals. Each report's cost is split across its days by token share,
+ * so a report that spans two months is split between them.
  */
 export function calculateMonthlyTrends(reports: StoredReport[]): TrendData[] {
-  const grouped = groupReportsByMonth(reports);
-  const trends: TrendData[] = [];
+  const months = new Map<string, TrendData & { reportIds: Set<string> }>();
 
-  for (const [period, monthReports] of grouped) {
-    // Aggregate all reports in this month
-    const trend: TrendData = {
-      period,
-      totalTokens: 0,
-      totalCost: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      messageCount: 0,
-      sessionCount: 0,
-    };
-
-    for (const stored of monthReports) {
-      const { report } = stored;
-      trend.inputTokens += report.usage.tokens.input;
-      trend.outputTokens += report.usage.tokens.output;
-      trend.totalTokens += report.usage.tokens.input + report.usage.tokens.output;
-      trend.messageCount += report.usage.messages.count;
-      trend.sessionCount += report.usage.sessions.count;
-      trend.totalCost += calculateReportCost(report);
+  const bucket = (monthKey: string) => {
+    if (!months.has(monthKey)) {
+      months.set(monthKey, {
+        period: monthKey,
+        totalTokens: 0,
+        totalCost: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        messageCount: 0,
+        sessionCount: 0,
+        activeDays: 0,
+        reportIds: new Set<string>(),
+      });
     }
+    return months.get(monthKey)!;
+  };
 
-    trends.push(trend);
+  for (const stored of reports) {
+    const { report } = stored;
+    const reportTokens = report.usage.tokens.input + report.usage.tokens.output;
+    const reportCost = calculateReportCost(report);
+
+    for (const day of report.usage.messages.by_day) {
+      const t = bucket(monthOf(day.date));
+      const dayTokens = day.input + day.output;
+      t.activeDays += day.count > 0 ? 1 : 0;
+      t.inputTokens += day.input;
+      t.outputTokens += day.output;
+      t.totalTokens += dayTokens;
+      t.messageCount += day.count;
+      t.totalCost += reportTokens > 0 ? (dayTokens / reportTokens) * reportCost : 0;
+      // Sessions are counted once per report per month, not once per day
+      if (!t.reportIds.has(stored.id)) {
+        t.reportIds.add(stored.id);
+        t.sessionCount += report.usage.sessions.count;
+      }
+    }
   }
 
-  // Sort by period
-  return trends.sort((a, b) => a.period.localeCompare(b.period));
+  return Array.from(months.values())
+    .map(({ reportIds, ...trend }) => trend)
+    .sort((a, b) => a.period.localeCompare(b.period));
 }
 
+/** A month counts as "full enough" to compare only when it has at least this many active days. */
+const MIN_DAYS_TO_COMPARE = 20;
+
 /**
- * Calculate usage trend analysis
+ * Calculate usage trend analysis.
+ * percentChange is null when the latest month is too short to compare fairly.
  */
 export function analyzeUsageTrends(reports: StoredReport[]): UsageTrend | null {
   if (reports.length === 0) return null;
 
   const monthlyData = calculateMonthlyTrends(reports);
-
   if (monthlyData.length === 0) return null;
 
-  // Calculate percent change from previous period
-  let percentChange = 0;
+  let percentChange: number | null = null;
   if (monthlyData.length >= 2) {
     const current = monthlyData[monthlyData.length - 1];
     const previous = monthlyData[monthlyData.length - 2];
-    if (previous.totalCost > 0) {
+    if (previous.totalCost > 0 && current.activeDays >= MIN_DAYS_TO_COMPARE) {
       percentChange = ((current.totalCost - previous.totalCost) / previous.totalCost) * 100;
     }
   }
 
-  // Calculate average daily cost across all data
-  const totalDays = reports.reduce((acc, stored) => {
-    const start = new Date(stored.report.period.start);
-    const end = new Date(stored.report.period.end);
-    return acc + Math.max(1, Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
-  }, 0);
-
+  // Average per calendar day across the reports' periods, so quiet days count
   const totalCost = monthlyData.reduce((acc, m) => acc + m.totalCost, 0);
+  const totalDays = reports.reduce((acc, s) => acc + spanDays(s.report.period.start, s.report.period.end), 0);
   const avgDailyCost = totalDays > 0 ? totalCost / totalDays : 0;
-
-  // Project monthly cost based on average daily
-  const projectedMonthlyCost = avgDailyCost * 30;
 
   return {
     data: monthlyData,
     percentChange,
     avgDailyCost,
-    projectedMonthlyCost,
+    projectedMonthlyCost: avgDailyCost * 30,
   };
 }
 
@@ -125,14 +127,13 @@ export function getDailyBreakdown(reports: StoredReport[]): Array<{
   const dayMap = new Map<string, { tokens: number; cost: number; messages: number }>();
 
   for (const stored of reports) {
-    for (const day of stored.report.usage.messages.by_day) {
+    const report = stored.report;
+    const reportTotalTokens = report.usage.tokens.input + report.usage.tokens.output;
+    const reportCost = calculateReportCost(report);
+
+    for (const day of report.usage.messages.by_day) {
       const existing = dayMap.get(day.date) || { tokens: 0, cost: 0, messages: 0 };
       const dayTokens = day.input + day.output;
-
-      // Estimate cost based on token ratio
-      const report = stored.report;
-      const reportTotalTokens = report.usage.tokens.input + report.usage.tokens.output;
-      const reportCost = calculateReportCost(report);
       const dayCost = reportTotalTokens > 0 ? (dayTokens / reportTotalTokens) * reportCost : 0;
 
       dayMap.set(day.date, {
@@ -157,18 +158,13 @@ export function getWeekdayHeatmap(reports: StoredReport[]): Array<{
   avgMessages: number;
 }> {
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const dayStats: Record<number, { totalTokens: number; totalMessages: number; count: number }> = {};
+  const dayStats = dayNames.map(() => ({ totalTokens: 0, totalMessages: 0, count: 0 }));
 
-  // Initialize
-  for (let i = 0; i < 7; i++) {
-    dayStats[i] = { totalTokens: 0, totalMessages: 0, count: 0 };
-  }
-
-  // Aggregate
   for (const stored of reports) {
     for (const day of stored.report.usage.messages.by_day) {
-      const date = new Date(day.date);
-      const dayOfWeek = date.getDay();
+      // Parse as a calendar date so the weekday does not shift with timezone
+      const [y, m, d] = day.date.split('-').map(Number);
+      const dayOfWeek = new Date(y, m - 1, d).getDay();
 
       dayStats[dayOfWeek].totalTokens += day.input + day.output;
       dayStats[dayOfWeek].totalMessages += day.count;
@@ -176,7 +172,6 @@ export function getWeekdayHeatmap(reports: StoredReport[]): Array<{
     }
   }
 
-  // Calculate averages
   return dayNames.map((name, i) => ({
     day: name,
     avgTokens: dayStats[i].count > 0 ? dayStats[i].totalTokens / dayStats[i].count : 0,
@@ -185,7 +180,8 @@ export function getWeekdayHeatmap(reports: StoredReport[]): Array<{
 }
 
 /**
- * Calculate model usage distribution across all reports
+ * Calculate model usage distribution across all reports.
+ * Uses a Map so model names like "__proto__" are safe keys.
  */
 export function getModelDistribution(reports: StoredReport[]): Array<{
   model: string;
@@ -193,30 +189,27 @@ export function getModelDistribution(reports: StoredReport[]): Array<{
   cost: number;
   percentage: number;
 }> {
-  const modelStats: Record<string, { input: number; output: number }> = {};
+  const modelStats = new Map<string, { input: number; output: number; cost: number }>();
   let totalTokens = 0;
 
   for (const stored of reports) {
     for (const [model, tokens] of Object.entries(stored.report.usage.tokens.by_model)) {
-      if (!modelStats[model]) {
-        modelStats[model] = { input: 0, output: 0 };
-      }
-      modelStats[model].input += tokens.input;
-      modelStats[model].output += tokens.output;
+      const entry = modelStats.get(model) || { input: 0, output: 0, cost: 0 };
+      entry.input += tokens.input;
+      entry.output += tokens.output;
+      entry.cost += tokenCost(model, tokens).cost;
+      modelStats.set(model, entry);
       totalTokens += tokens.input + tokens.output;
     }
   }
 
-  return Object.entries(modelStats)
-    .map(([model, tokens]) => {
-      const modelTokens = tokens.input + tokens.output;
-      const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-      const cost = (tokens.input / 1_000_000) * pricing.input + (tokens.output / 1_000_000) * pricing.output;
-
+  return Array.from(modelStats.entries())
+    .map(([model, s]) => {
+      const modelTokens = s.input + s.output;
       return {
         model: model.replace('claude-', '').replace('gpt-', ''),
         tokens: modelTokens,
-        cost,
+        cost: s.cost,
         percentage: totalTokens > 0 ? (modelTokens / totalTokens) * 100 : 0,
       };
     })

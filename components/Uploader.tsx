@@ -1,16 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
-  Upload, Play, Terminal, Key, FileJson, Copy, Check,
+  Upload, Play, Terminal, Key, FileJson,
   Bot, Sparkles, ChevronRight, Download, Server, AlertCircle,
   ArrowLeft, ShieldCheck, FileUp, Lock, EyeOff, Loader2, Calendar,
-  ExternalLink, HelpCircle, Globe, Folder, Info, DollarSign, Wifi, RefreshCw
+  ExternalLink, HelpCircle, Globe, Info, DollarSign, Wifi, RefreshCw
 } from 'lucide-react';
 import { UsageReport } from '../types';
-import { COLLECTOR_SCRIPT_TEMPLATE, PLANS_DATABASE } from '../constants';
+import { PLANS, PLAN_KEYS, PlanKey } from '../services/pricing';
 import { fetchOpenAIUsage, isValidOpenAIKey, testOpenAIConnection } from '../services/openaiService';
 
-// Claude subscription plans for selection
-const CLAUDE_PLANS = PLANS_DATABASE.filter(p => p.provider === 'anthropic' && p.type === 'subscription');
+const MAX_FILE_BYTES = 50 * 1024 * 1024;
 
 interface UploaderProps {
   onDataLoaded: (data: UsageReport, fromLiveServer?: boolean) => void;
@@ -23,10 +22,10 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
   const [view, setView] = useState<ViewState>('main');
   const [dragActive, setDragActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [selectedPlan, setSelectedPlan] = useState(CLAUDE_PLANS[0]); // Default to first plan
+  const [selectedPlan, setSelectedPlan] = useState<PlanKey>('Claude Pro');
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [dateRange, setDateRange] = useState({
     start: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0], // 30 days ago
     end: new Date().toISOString().split('T')[0], // today
@@ -61,6 +60,17 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
       checkLocalServer();
     }
   }, [view]);
+
+  // A file dropped anywhere on the page should load here, not open in a new browser tab
+  useEffect(() => {
+    const block = (e: DragEvent) => e.preventDefault();
+    window.addEventListener('dragover', block);
+    window.addEventListener('drop', block);
+    return () => {
+      window.removeEventListener('dragover', block);
+      window.removeEventListener('drop', block);
+    };
+  }, []);
 
   const loadFromLocalServer = async () => {
     setLocalServerLoading(true);
@@ -115,7 +125,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
       provider: 'anthropic',
       source: 'manual_upload',
       period: { start: new Date().toISOString(), end: new Date().toISOString() },
-      plan: { name: selectedPlan.name, price_usd: selectedPlan.price_usd, type: 'subscription' },
+      plan: { name: selectedPlan, price_usd: PLANS[selectedPlan].price, type: 'subscription' },
       usage: {
         tokens: { input: 0, output: 0, cached: 0, by_model: {} },
         messages: { count: 0, by_day: [] },
@@ -166,27 +176,55 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
     return usage;
   };
 
-  const processFile = async (file: File) => {
-    try {
-      const text = await file.text();
-      const json = JSON.parse(text);
-      
-      if (json.usage && json.provider) {
-        onDataLoaded(json as UsageReport);
-        return;
-      }
-      
-      if (Array.isArray(json) && json.length > 0 && (json[0].uuid || json[0].chat_messages)) {
-        const report = convertClaudeExportToUsageReport(json);
-        onDataLoaded(report);
-        return;
-      }
+  // Checks only the fields the dashboard reads, so a wrong file fails here, not during rendering
+  const isUsageReport = (json: any): json is UsageReport =>
+    json &&
+    typeof json === 'object' &&
+    json.usage &&
+    json.usage.tokens &&
+    typeof json.usage.tokens.input === 'number' &&
+    typeof json.usage.tokens.output === 'number' &&
+    json.usage.tokens.by_model &&
+    typeof json.usage.tokens.by_model === 'object' &&
+    json.usage.messages &&
+    Array.isArray(json.usage.messages.by_day) &&
+    json.period &&
+    typeof json.period.start === 'string' &&
+    typeof json.period.end === 'string' &&
+    json.plan &&
+    typeof json.plan.price_usd === 'number';
 
-      throw new Error("Unknown JSON format");
-    } catch (err) {
-      console.error(err);
-      setError("Failed to parse file. Please ensure it is a valid 'usage_report.json' or 'conversations.json' export.");
+  const processFile = async (file: File) => {
+    setError(null);
+    if (file.size > MAX_FILE_BYTES) {
+      setError('That file is over 50 MB. Export a shorter date range, or use llm-usage scan.');
+      return;
     }
+
+    let json: any;
+    try {
+      json = JSON.parse(await file.text());
+    } catch {
+      setError("That file isn't valid JSON. Use usage_report.json from llm-usage scan, or conversations.json from Claude.ai.");
+      return;
+    }
+
+    if (isUsageReport(json)) {
+      onDataLoaded(json);
+      return;
+    }
+
+    if (Array.isArray(json) && json.length > 0 && (json[0].uuid || json[0].chat_messages)) {
+      const report = convertClaudeExportToUsageReport(json);
+      if (report.usage.messages.count === 0) {
+        setError('This Claude.ai export has no messages in it.');
+        return;
+      }
+      onDataLoaded(report);
+      return;
+    }
+
+    setError("This isn't a usage report or a Claude.ai export. Try usage_report.json from llm-usage scan.");
   };
 
   const handleDrop = (e: React.DragEvent) => {
@@ -205,12 +243,6 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
     }
   };
 
-  const copyScript = () => {
-    navigator.clipboard.writeText(COLLECTOR_SCRIPT_TEMPLATE);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
-
   const handleApiKeySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -225,6 +257,17 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
       return;
     }
 
+    const startDate = new Date(dateRange.start);
+    const endDate = new Date(dateRange.end);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      setError('Pick a start and end date.');
+      return;
+    }
+    if (endDate < startDate) {
+      setError('The end date is before the start date.');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -236,12 +279,11 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
         return;
       }
 
-      // Fetch usage data
-      const startDate = new Date(dateRange.start);
-      const endDate = new Date(dateRange.end);
-      endDate.setHours(23, 59, 59, 999); // End of day
+      // Fetch usage data through the end of the chosen day
+      const rangeEnd = new Date(endDate);
+      rangeEnd.setHours(23, 59, 59, 999);
 
-      const report = await fetchOpenAIUsage(apiKey, startDate, endDate);
+      const report = await fetchOpenAIUsage(apiKey, startDate, rangeEnd);
       onDataLoaded(report);
     } catch (err) {
       setError(`Failed to fetch usage: ${err instanceof Error ? err.message : 'Unknown error'}`);
@@ -283,8 +325,8 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
       </div>
       <h3 className="text-lg font-bold text-white mb-2">{title}</h3>
       <p className="text-slate-400 text-sm leading-relaxed flex-1">{description}</p>
-      <div className={`mt-6 flex items-center text-xs font-semibold uppercase tracking-wider ${colorClass} opacity-0 group-hover:opacity-100 transform translate-y-2 group-hover:translate-y-0 transition-all duration-300`}>
-        Select Option <ChevronRight className="w-4 h-4 ml-1" />
+      <div className={`mt-6 flex items-center text-xs font-semibold uppercase tracking-wider ${colorClass} opacity-100 md:opacity-0 group-hover:opacity-100 group-focus-visible:opacity-100 transition-opacity duration-300`}>
+        Choose <ChevronRight className="w-4 h-4 ml-1" aria-hidden="true" />
       </div>
     </button>
   );
@@ -321,11 +363,12 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
             {/* Navigation Header (if not on main) */}
             {view !== 'main' && (
               <div className="flex items-center gap-4 mb-8 animate-in fade-in slide-in-from-left-4 duration-300">
-                <button 
+                <button
                   onClick={goBack}
+                  aria-label="Back"
                   className="p-2 rounded-full hover:bg-white/5 text-slate-400 hover:text-white transition-colors"
                 >
-                  <ArrowLeft className="w-5 h-5" />
+                  <ArrowLeft className="w-5 h-5" aria-hidden="true" />
                 </button>
                 <div className="h-6 w-px bg-white/10"></div>
                 <h2 className="text-xl font-semibold text-white">
@@ -340,12 +383,10 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
 
             {/* Error Message */}
             {error && (
-              <div className="absolute top-6 left-1/2 -translate-x-1/2 w-3/4 z-20 animate-in fade-in slide-in-from-top-2">
-                <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-200 text-sm flex items-center gap-3 shadow-lg backdrop-blur-md">
-                  <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
-                  {error}
-                  <button onClick={() => setError(null)} className="ml-auto hover:text-white">✕</button>
-                </div>
+              <div role="alert" className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-200 text-sm flex items-start gap-3">
+                <AlertCircle className="w-5 h-5 text-red-400 shrink-0" aria-hidden="true" />
+                <span className="flex-1">{error}</span>
+                <button onClick={() => setError(null)} aria-label="Dismiss message" className="text-red-200 hover:text-white px-1">✕</button>
               </div>
             )}
 
@@ -521,20 +562,27 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                       </div>
                       <div className="flex-1">
                         <h4 className="text-white font-bold text-lg mb-2">Quick Setup (Recommended)</h4>
-                        <p className="text-slate-400 text-sm mb-4">Run this command in your terminal to start the local server:</p>
-                        <div className="bg-slate-900 rounded-lg p-3 font-mono text-sm">
-                          <code className="text-emerald-400">llm-usage serve</code>
-                        </div>
-                        <p className="text-xs text-slate-500 mt-2">
-                          The dashboard will auto-detect the server and show your usage data instantly.
+                        <ol className="space-y-3 text-sm text-slate-300 list-decimal list-inside">
+                          <li>
+                            One time only, in the project folder:
+                            <code className="block mt-1 bg-slate-900 rounded-lg p-2 font-mono text-emerald-400">npm run setup</code>
+                          </li>
+                          <li>
+                            Then start the local server:
+                            <code className="block mt-1 bg-slate-900 rounded-lg p-2 font-mono text-emerald-400">llm-usage serve</code>
+                          </li>
+                        </ol>
+                        <p className="text-xs text-slate-500 mt-3">
+                          Leave that terminal open. This page detects the server and loads your data.
                         </p>
                       </div>
                       <button
                         onClick={refreshLocalServerCheck}
                         className="p-2 hover:bg-slate-700 rounded-lg transition-colors text-slate-400 hover:text-white shrink-0"
-                        title="Refresh connection"
+                        aria-label="Check again for the local server"
+                        title="Check again"
                       >
-                        <RefreshCw className={`w-5 h-5 ${localServerStatus === 'checking' ? 'animate-spin' : ''}`} />
+                        <RefreshCw className="w-5 h-5" aria-hidden="true" />
                       </button>
                     </div>
                   </div>
@@ -606,11 +654,17 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                   </h3>
                   <form onSubmit={handleApiKeySubmit} className="space-y-4">
                     <div className="relative group">
+                      <label htmlFor="openai-key" className="block text-xs text-slate-400 mb-1">
+                        OpenAI admin key (usage data needs an admin key, not a regular API key)
+                      </label>
                       <input
+                        id="openai-key"
                         type="password"
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
                         placeholder="sk-..."
+                        autoComplete="off"
+                        spellCheck={false}
                         disabled={isLoading}
                         className="w-full bg-slate-950/50 border border-slate-700 rounded-xl px-4 py-3 text-white placeholder:text-slate-600 focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500/50 outline-none transition-all disabled:opacity-50"
                       />
@@ -618,10 +672,11 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
 
                     <div className="grid grid-cols-2 gap-3">
                       <div>
-                        <label className="text-xs text-slate-500 mb-1 block flex items-center gap-1">
-                          <Calendar className="w-3 h-3" /> Start Date
+                        <label htmlFor="openai-start" className="text-xs text-slate-500 mb-1 block flex items-center gap-1">
+                          <Calendar className="w-3 h-3" aria-hidden="true" /> Start Date
                         </label>
                         <input
+                          id="openai-start"
                           type="date"
                           value={dateRange.start}
                           onChange={(e) => setDateRange({ ...dateRange, start: e.target.value })}
@@ -630,10 +685,11 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                         />
                       </div>
                       <div>
-                        <label className="text-xs text-slate-500 mb-1 block flex items-center gap-1">
-                          <Calendar className="w-3 h-3" /> End Date
+                        <label htmlFor="openai-end" className="text-xs text-slate-500 mb-1 block flex items-center gap-1">
+                          <Calendar className="w-3 h-3" aria-hidden="true" /> End Date
                         </label>
                         <input
+                          id="openai-end"
                           type="date"
                           value={dateRange.end}
                           onChange={(e) => setDateRange({ ...dateRange, end: e.target.value })}
@@ -654,7 +710,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                         rel="noopener noreferrer"
                         className="text-xs text-emerald-400 hover:text-emerald-300 flex items-center gap-1"
                       >
-                        Get API Key <ExternalLink className="w-3 h-3" />
+                        Find or create keys <ExternalLink className="w-3 h-3" aria-hidden="true" />
                       </a>
                     </div>
 
@@ -780,21 +836,23 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                     Select your subscription to get accurate cost analysis.
                   </p>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {CLAUDE_PLANS.map((plan) => (
+                    {PLAN_KEYS.map((plan) => (
                       <button
-                        key={plan.name}
+                        key={plan}
+                        type="button"
+                        aria-pressed={selectedPlan === plan}
                         onClick={() => setSelectedPlan(plan)}
                         className={`p-4 rounded-xl border-2 transition-all text-left ${
-                          selectedPlan.name === plan.name
+                          selectedPlan === plan
                             ? 'border-purple-500 bg-purple-500/10'
                             : 'border-slate-700 hover:border-slate-600 bg-slate-800/50'
                         }`}
                       >
-                        <div className="font-semibold text-white">{plan.name}</div>
+                        <div className="font-semibold text-white">{plan}</div>
                         <div className={`text-2xl font-bold mt-1 ${
-                          selectedPlan.name === plan.name ? 'text-purple-400' : 'text-slate-300'
+                          selectedPlan === plan ? 'text-purple-400' : 'text-slate-300'
                         }`}>
-                          ${plan.price_usd}<span className="text-sm font-normal text-slate-500">/mo</span>
+                          ${PLANS[plan].price}<span className="text-sm font-normal text-slate-500">/mo</span>
                         </div>
                       </button>
                     ))}
@@ -810,7 +868,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                   <div className="h-px bg-slate-800 flex-1"></div>
                   <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">
                     {view === 'anthropic-cli' ? 'Step 2: Upload Report' :
-                     view === 'anthropic-web' ? 'Step 6: Upload File' : 'Drop File Here'}
+                     view === 'anthropic-web' ? 'Last step: Upload File' : 'Upload File'}
                   </span>
                   <div className="h-px bg-slate-800 flex-1"></div>
                 </div>
@@ -827,33 +885,37 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo }) => {
                   onDragOver={handleDrag}
                   onDrop={handleDrop}
                 >
-                  <input 
-                    type="file" 
-                    id="file-upload" 
-                    className="hidden" 
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    id="file-upload"
+                    className="sr-only"
+                    tabIndex={-1}
+                    aria-hidden="true"
                     onChange={handleChange}
-                    accept=".json"
+                    accept=".json,application/json"
                   />
-                  
-                  <div className={`p-4 rounded-xl mb-4 transition-all duration-300 ${dragActive ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-400 group-hover:text-white group-hover:bg-slate-700'}`}>
+
+                  <div className={`p-4 rounded-xl mb-4 transition-all duration-300 ${dragActive ? 'bg-indigo-500 text-white' : 'bg-slate-800 text-slate-400 group-hover:text-white group-hover:bg-slate-700'}`} aria-hidden="true">
                     <Upload className="w-8 h-8" />
                   </div>
-                  
+
                   <h3 className="text-lg font-bold text-white mb-1">
-                    {dragActive ? 'Drop to Upload' : 'Drag & drop file here'}
+                    {dragActive ? 'Drop to upload' : 'Drop your file here'}
                   </h3>
                   <p className="text-slate-500 text-sm mb-6 max-w-sm mx-auto">
-                    {view === 'anthropic-web' 
-                      ? 'Upload conversations.json. Processing happens locally in your browser.' 
-                      : 'Supports usage_report.json or standard JSON exports. No data leaves your device.'}
+                    {view === 'anthropic-web'
+                      ? 'Upload conversations.json. It is read in your browser and not sent anywhere.'
+                      : 'Accepts usage_report.json or a Claude.ai export. Read in your browser, not sent anywhere.'}
                   </p>
-                  
-                  <label 
-                    htmlFor="file-upload" 
-                    className="px-6 py-2.5 bg-slate-200 hover:bg-white text-slate-900 font-semibold rounded-lg cursor-pointer transition-all shadow-lg hover:shadow-xl active:scale-95"
+
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="px-6 py-2.5 bg-slate-200 hover:bg-white text-slate-900 font-semibold rounded-lg cursor-pointer transition-all shadow-lg hover:shadow-xl active:scale-95 focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-900"
                   >
-                    Select File
-                  </label>
+                    Choose file
+                  </button>
                 </div>
               </div>
             )}

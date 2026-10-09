@@ -28,3 +28,20 @@ dist-ssr
 
 # Local specs
 PROJECT_SPEC.md
+
+# Secrets. Never commit keys.
+.env
+.env.*
+!.env.example
+
+# Your own usage data. Personal, so keep it out of git.
+usage_report.json
+*.usage.json
+packages/cli/dist-cjs
+
+# Extension build output
+packages/extension/build
+packages/extension/.plasmo
+
+# Temporary files
+*.tmp

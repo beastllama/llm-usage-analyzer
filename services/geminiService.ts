@@ -1,51 +1,61 @@
 import { GoogleGenAI } from "@google/genai";
-import { UsageReport, AnalysisResult } from "../types";
+import { UsageReport } from "../types";
+import { MonthlyComparison, UsagePattern, formatTokenNumber, formatUsd } from "./analysisService";
 
-export const getGeminiRecommendation = async (
-  usage: UsageReport,
-  analysis: AnalysisResult
-): Promise<string> => {
-  if (!process.env.API_KEY) {
-    return "API Key is missing. Please configure your environment to receive AI recommendations.";
-  }
+// Opt-in only. The user pastes their own Gemini key. No key is bundled with the app.
+export const AI_MODEL = "gemini-2.5-flash";
+const TIMEOUT_MS = 20_000;
 
-  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+/** The exact numbers that leave the browser. Shown to the user before they click. */
+export function aiPayloadPreview(report: UsageReport, cmp: MonthlyComparison, pattern: UsagePattern): string[] {
+  return [
+    `Plan you chose: ${cmp.planKey} (${formatUsd(cmp.planPrice)}/mo)`,
+    `Estimated pay-as-you-go cost: ${formatUsd(cmp.apiCostMonthly)}/mo`,
+    `Tokens: ${formatTokenNumber(report.usage.tokens.input)} in, ${formatTokenNumber(report.usage.tokens.output)} out`,
+    `Days with activity: ${pattern.activeDays} of ${pattern.periodDays}`,
+  ];
+}
 
-  const prompt = `
-    You are an expert financial analyst for LLM usage. 
-    Analyze the following user's LLM usage report and provide a strategic recommendation.
+export type AiResult = { ok: true; text: string } | { ok: false; error: string };
 
-    CONTEXT:
-    The user is currently on a "${usage.plan.name}" plan costing $${analysis.currentMonthlyCost}/month.
-    If they switched to pay-as-you-go API calls, it would cost approximately $${analysis.apiEquivalentCost}/month.
-    
-    DATA SUMMARY:
-    - Total Input Tokens: ${usage.usage.tokens.input}
-    - Total Output Tokens: ${usage.usage.tokens.output}
-    - Active Days: ${usage.usage.messages.by_day.filter(d => d.count > 0).length}
-    - Total Sessions: ${usage.usage.sessions.count}
-    
-    TASK:
-    Provide a concise, 3-paragraph analysis:
-    1. Verdict: Are they overpaying or underpaying? (Be direct)
-    2. Usage Patterns: Analyze their ratio of input/output and model preference if apparent. Does this suggest they are using the tool for coding, creative writing, or simple Q&A?
-    3. Recommendation: Should they switch to API, downgrade, or stay put? Mention if the convenience of the chat UI justifies any premium.
+export async function getGeminiRecommendation(
+  apiKey: string,
+  report: UsageReport,
+  cmp: MonthlyComparison,
+  pattern: UsagePattern,
+): Promise<AiResult> {
+  const key = apiKey.trim();
+  if (!key) return { ok: false, error: "Paste a Gemini API key first." };
 
-    Output as plain text. Keep it professional but helpful.
-  `;
+  // Numbers only. No text from the uploaded file goes into the prompt.
+  const prompt = [
+    "You are a plain-language advisor for a person deciding between a Claude subscription and pay-as-you-go API use.",
+    "Write at most 3 short sentences. Use simple words. No headings, no bullet points.",
+    "Say whether the subscription or pay-as-you-go is cheaper for this usage, and one practical next step.",
+    "",
+    `Plan: ${cmp.planKey}, ${formatUsd(cmp.planPrice)} per month.`,
+    `Estimated pay-as-you-go cost: ${formatUsd(cmp.apiCostMonthly)} per month (list prices, 30-day scale).`,
+    `Input tokens: ${report.usage.tokens.input}. Output tokens: ${report.usage.tokens.output}.`,
+    `Days with activity: ${pattern.activeDays} of ${pattern.periodDays}.`,
+  ].join("\n");
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+    const ai = new GoogleGenAI({ apiKey: key });
+    const call = ai.models.generateContent({
+      model: AI_MODEL,
       contents: prompt,
-      config: {
-        temperature: 0.7,
-      }
+      config: { temperature: 0.4 },
     });
-
-    return response.text || "Unable to generate analysis at this time.";
-  } catch (error) {
-    console.error("Gemini API Error:", error);
-    return "Error connecting to AI analysis service.";
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("timeout")), TIMEOUT_MS),
+    );
+    const response = await Promise.race([call, timeout]);
+    const text = response.text?.trim();
+    return text ? { ok: true, text } : { ok: false, error: "The AI returned an empty answer. Try again." };
+  } catch (err) {
+    const message = err instanceof Error && err.message === "timeout"
+      ? "The AI took too long. Try again."
+      : "The AI request failed. Check the key and try again.";
+    return { ok: false, error: message };
   }
-};
+}

@@ -1,19 +1,16 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line
+  PieChart, Pie, Cell
 } from 'recharts';
-import {
-  TrendingUp, TrendingDown, DollarSign, Activity,
-  AlertTriangle, BrainCircuit, RefreshCw, Scale, Download, FileText, FileSpreadsheet, Copy, Check, Zap, Radio, ChevronDown
-} from 'lucide-react';
-import { UsageReport, AnalysisResult } from '../types';
-import { calculateAnalysis, formatTokenNumber } from '../services/analysisService';
-import { getGeminiRecommendation } from '../services/geminiService';
+import { Download, FileText, FileSpreadsheet, Copy, Check, Scale, MoreHorizontal, ChevronDown, RefreshCw, Sparkles, Eye, EyeOff } from 'lucide-react';
+import { UsageReport } from '../types';
+import { calculateAnalysis, analyzeUsagePattern, formatTokenNumber, formatUsd } from '../services/analysisService';
+import { aiPayloadPreview, getGeminiRecommendation, AiResult } from '../services/geminiService';
+import { PLANS, PLAN_KEYS, PlanKey, toPlanKey } from '../services/pricing';
 import PlanComparison from './PlanComparison';
 import PlanFitAnalyzer from './PlanFitAnalyzer';
 import { exportToJSON, exportToCSV, exportToPDF, copyToClipboard } from '../services/exportService';
-import { PLAN_LIMITS, PlanLimitKey } from '../constants';
 
 interface DashboardProps {
   data: UsageReport;
@@ -24,61 +21,59 @@ interface DashboardProps {
 }
 
 const COLORS = ['#6366f1', '#8b5cf6', '#ec4899', '#f43f5e'];
+const PLAN_STORAGE_KEY = 'selectedPlan';
 
-const StatCard: React.FC<{ 
-  title: string; 
-  value: string; 
-  subtitle?: string; 
-  icon: React.ReactNode;
-  trend?: 'up' | 'down' | 'neutral';
-  colorClass?: string;
-  delay?: number;
-}> = ({ title, value, subtitle, icon, trend, colorClass = "text-white", delay = 0 }) => (
-  <div 
-    className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 backdrop-blur-sm 
-               hover:bg-slate-800 hover:border-indigo-500/30 hover:shadow-lg hover:shadow-indigo-500/10 hover:-translate-y-1 transition-all duration-300
-               animate-in fade-in slide-in-from-bottom-4 fill-mode-backwards"
-    style={{ animationDuration: '700ms', animationDelay: `${delay}ms` }}
-  >
-    <div className="flex justify-between items-start mb-4">
-      <div className="p-2 bg-slate-700/30 rounded-lg text-slate-300">
-        {icon}
-      </div>
-      {trend && (
-        <span className={`flex items-center text-xs font-medium px-2 py-1 rounded-full ${
-          trend === 'down' ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'
-        }`}>
-          {trend === 'down' ? <TrendingDown className="w-3 h-3 mr-1" /> : <TrendingUp className="w-3 h-3 mr-1" />}
-          {trend === 'down' ? 'Saving' : 'Costly'}
-        </span>
-      )}
-    </div>
-    <h3 className="text-slate-400 text-sm font-medium mb-1">{title}</h3>
-    <div className={`text-2xl font-bold ${colorClass}`}>{value}</div>
-    {subtitle && <p className="text-slate-500 text-xs mt-2">{subtitle}</p>}
-  </div>
-);
+type Panel = 'compare' | 'pattern' | null;
 
 const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData, liveServerConnected, onLiveRefresh }) => {
-  const analysis = useMemo(() => calculateAnalysis(data), [data]);
-  const [aiAnalysis, setAiAnalysis] = useState<string | null>(null);
-  const [loadingAi, setLoadingAi] = useState(false);
-  const [showPlanComparison, setShowPlanComparison] = useState(false);
-  const [showPlanFit, setShowPlanFit] = useState(false);
-  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [selectedPlan, setSelectedPlan] = useState<PlanKey>(() => {
+    try {
+      return toPlanKey(localStorage.getItem(PLAN_STORAGE_KEY)) ?? 'Claude Pro';
+    } catch {
+      return 'Claude Pro';
+    }
+  });
+  const [panel, setPanel] = useState<Panel>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const [showMore, setShowMore] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // Global plan selection - persisted to localStorage
-  const [selectedPlan, setSelectedPlan] = useState<PlanLimitKey>(() => {
-    const saved = localStorage.getItem('selectedPlan');
-    return (saved as PlanLimitKey) || 'Claude Max 20x';
-  });
+  // AI tip: off until the user asks. The key lives in memory only, for this page.
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiKey, setAiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [aiState, setAiState] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; text?: string; error?: string }>({ status: 'idle' });
 
-  // Persist plan selection
+  const cmp = useMemo(() => calculateAnalysis(data, selectedPlan), [data, selectedPlan]);
+  const pattern = useMemo(() => analyzeUsagePattern(data), [data]);
+  const totalTokens = data.usage.tokens.input + data.usage.tokens.output;
+  const inputShare = totalTokens > 0 ? (data.usage.tokens.input / totalTokens) * 100 : 0;
+
   useEffect(() => {
-    localStorage.setItem('selectedPlan', selectedPlan);
+    try {
+      localStorage.setItem(PLAN_STORAGE_KEY, selectedPlan);
+    } catch {
+      // Storage blocked. The choice still works for this visit.
+    }
   }, [selectedPlan]);
+
+  // A different report or plan makes the old AI answer stale
+  useEffect(() => {
+    setAiState({ status: 'idle' });
+  }, [data, selectedPlan]);
+
+  // Escape closes open menus
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setShowMore(false);
+        setPanel(null);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const handleRefresh = async () => {
     if (!onLiveRefresh) return;
@@ -87,437 +82,377 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
     setIsRefreshing(false);
   };
 
-  // Determine if data spans multiple months for better X-axis formatting
-  const dateRange = useMemo(() => {
-    const days = data.usage.messages.by_day;
-    if (days.length === 0) return { spansMultipleMonths: false, months: new Set<string>() };
-    const months = new Set(days.map(d => new Date(d.date).toISOString().slice(0, 7)));
-    return { spansMultipleMonths: months.size > 1, months };
-  }, [data]);
-
-  const formatXAxisDate = (dateStr: string) => {
-    const date = new Date(dateStr);
-    if (dateRange.spansMultipleMonths) {
-      // Show "Jan 15" format for multi-month data
-      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    }
-    // Just show day number for single month
-    return date.getDate().toString();
-  };
-
   const handleExport = (format: 'json' | 'csv' | 'pdf') => {
-    setShowExportMenu(false);
-    switch (format) {
-      case 'json':
-        exportToJSON(data);
-        break;
-      case 'csv':
-        exportToCSV(data);
-        break;
-      case 'pdf':
-        exportToPDF(data);
-        break;
-    }
+    setShowMore(false);
+    if (format === 'json') exportToJSON(data);
+    if (format === 'csv') exportToCSV(data);
+    if (format === 'pdf') exportToPDF(data);
   };
 
   const handleCopy = async () => {
     const success = await copyToClipboard(data);
-    if (success) {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+    setShowMore(false);
+    setCopied(success);
+    if (success) setTimeout(() => setCopied(false), 2000);
+  };
+
+  const askAi = async () => {
+    setAiState({ status: 'loading' });
+    const result: AiResult = await getGeminiRecommendation(aiKey, data, cmp, pattern);
+    if ('error' in result) {
+      setAiState({ status: 'error', error: result.error });
+    } else {
+      setAiState({ status: 'done', text: result.text });
     }
   };
 
-  useEffect(() => {
-    // Auto-trigger simple analysis or wait for user? Let's wait for user interaction or load immediately if small
-    // For this demo, let's load it on mount
-    const fetchAi = async () => {
-      setLoadingAi(true);
-      const result = await getGeminiRecommendation(data, analysis);
-      setAiAnalysis(result);
-      setLoadingAi(false);
-    };
-    fetchAi();
-  }, [data, analysis]);
+  // The verdict only makes sense for Claude usage with at least one priced model
+  const comparable = data.provider === 'anthropic' && cmp.canJudge && totalTokens > 0;
+  const notComparableReason = totalTokens === 0
+    ? 'No usage found in this period.'
+    : data.provider !== 'anthropic'
+      ? 'This report is from OpenAI. The plan comparison covers Claude plans only.'
+      : 'None of the models in this file have a known price, so cost cannot be compared.';
+
+  const headline = cmp.verdict === 'keep'
+    ? `Your ${selectedPlan} plan costs less than pay-as-you-go.`
+    : `Pay-as-you-go would cost less than your ${selectedPlan} plan.`;
+
+  const dateRange = useMemo(() => {
+    const months = new Set(data.usage.messages.by_day.map(d => d.date.slice(0, 7)));
+    return { spansMultipleMonths: months.size > 1 };
+  }, [data]);
+
+  const formatXAxisDate = (dateStr: string) => {
+    const [y, m, d] = dateStr.split('-').map(Number);
+    const date = new Date(y, m - 1, d);
+    return dateRange.spansMultipleMonths
+      ? date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+      : String(date.getDate());
+  };
+
+  const modelBreakdown = useMemo(() => {
+    const rows: Array<{ name: string; value: number }> = [];
+    for (const [name, t] of Object.entries(data.usage.tokens.by_model)) {
+      rows.push({ name: name.replace('claude-', ''), value: t.input + t.output });
+    }
+    return rows;
+  }, [data]);
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8 space-y-8 pb-20">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 animate-in fade-in slide-in-from-top-4 duration-700">
+    <div className="max-w-5xl mx-auto px-4 py-8 space-y-6 pb-20">
+      {/* Header: title, plan choice, and at most two buttons */}
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-white flex items-center gap-2">
-            Usage Analysis
-            {isLiveData && liveServerConnected ? (
-              <span className="text-xs font-medium text-red-400 bg-red-500/10 px-3 py-1.5 rounded-full border border-red-500/30 flex items-center gap-2">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
-                </span>
-                LIVE DATA
-              </span>
-            ) : isLiveData && !liveServerConnected ? (
-              <span className="text-xs font-medium text-amber-400 bg-amber-500/10 px-3 py-1.5 rounded-full border border-amber-500/30 flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                DISCONNECTED
-              </span>
-            ) : data.source === 'demo' ? (
-              <span className="text-xs font-normal text-slate-400 bg-slate-800 px-2 py-1 rounded-full border border-slate-700">
-                DEMO MODE
-              </span>
-            ) : (
-              <span className="text-xs font-normal text-slate-400 bg-slate-800 px-2 py-1 rounded-full border border-slate-700">
-                UPLOADED
-              </span>
+          <h2 className="text-2xl font-bold text-white flex items-center gap-2 flex-wrap">
+            Your usage
+            {isLiveData && liveServerConnected && (
+              <span className="text-xs font-medium text-red-300 bg-red-500/10 px-3 py-1 rounded-full border border-red-500/30">Live</span>
+            )}
+            {isLiveData && !liveServerConnected && (
+              <span className="text-xs font-medium text-amber-300 bg-amber-500/10 px-3 py-1 rounded-full border border-amber-500/30">Disconnected</span>
             )}
           </h2>
           <p className="text-slate-400 text-sm">
-            Period: {new Date(data.period.start).toLocaleDateString()} - {new Date(data.period.end).toLocaleDateString()}
+            {new Date(data.period.start).toLocaleDateString()} to {new Date(data.period.end).toLocaleDateString()}
           </p>
-          {/* Global Plan Selector */}
-          <div className="flex items-center gap-2 mt-2">
-            <span className="text-xs text-slate-500">Your plan:</span>
-            <div className="relative">
-              <select
-                value={selectedPlan}
-                onChange={(e) => setSelectedPlan(e.target.value as PlanLimitKey)}
-                className="appearance-none bg-slate-800 border border-slate-600 rounded-lg px-3 py-1.5 pr-8 text-white font-medium text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 cursor-pointer hover:bg-slate-700 transition-colors"
-              >
-                <option value="Claude Pro">Claude Pro ($20/mo)</option>
-                <option value="Claude Max 5x">Claude Max 5x ($100/mo)</option>
-                <option value="Claude Max 20x">Claude Max 20x ($200/mo)</option>
-              </select>
-              <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
-            </div>
-          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Refresh Button - Live Mode Only */}
+
+        <div className="flex items-center gap-2 flex-wrap">
           {isLiveData && (
             <button
               onClick={handleRefresh}
               disabled={isRefreshing || !liveServerConnected}
-              className={`text-sm flex items-center gap-2 px-4 py-2 rounded-lg transition-colors font-medium ${
-                liveServerConnected
-                  ? 'bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/30'
-                  : 'bg-slate-800 text-slate-500 border border-slate-700 cursor-not-allowed'
-              }`}
-              title={liveServerConnected ? 'Refresh data from server' : 'Server disconnected'}
+              className="text-sm flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-600 text-slate-200 hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-              {isRefreshing ? 'Refreshing...' : 'Refresh'}
+              <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} aria-hidden="true" />
+              {isRefreshing ? 'Refreshing' : 'Refresh'}
             </button>
           )}
 
-          {/* Plan Fit Button - Most Important */}
-          <button
-            onClick={() => { setShowPlanFit(!showPlanFit); if (!showPlanFit) setShowPlanComparison(false); }}
-            className={`text-sm flex items-center gap-2 px-4 py-2 rounded-lg transition-colors font-medium ${
-              showPlanFit
-                ? 'bg-purple-500 text-white shadow-lg shadow-purple-500/20'
-                : 'bg-purple-500/10 text-purple-400 hover:bg-purple-500/20 border border-purple-500/30'
-            }`}
-          >
-            <Zap className="w-4 h-4" /> Plan Fit
-          </button>
-
-          {/* Compare Plans Button */}
-          <button
-            onClick={() => { setShowPlanComparison(!showPlanComparison); if (!showPlanComparison) setShowPlanFit(false); }}
-            className={`text-sm flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-              showPlanComparison
-                ? 'bg-indigo-500 text-white'
-                : 'text-slate-400 hover:text-white hover:bg-slate-800'
-            }`}
-          >
-            <Scale className="w-4 h-4" /> Compare Plans
-          </button>
-
-          {/* Export Dropdown */}
           <div className="relative">
             <button
-              onClick={() => setShowExportMenu(!showExportMenu)}
-              className="text-sm text-slate-400 hover:text-white flex items-center gap-2 px-4 py-2 hover:bg-slate-800 rounded-lg transition-colors"
+              onClick={() => setShowMore(!showMore)}
+              aria-haspopup="menu"
+              aria-expanded={showMore}
+              className="text-sm flex items-center gap-2 px-4 py-2 rounded-lg text-slate-300 hover:bg-slate-800"
             >
-              <Download className="w-4 h-4" /> Export
+              <MoreHorizontal className="w-4 h-4" aria-hidden="true" /> More
             </button>
-
-            {showExportMenu && (
+            {showMore && (
               <>
-                <div className="fixed inset-0 z-40" onClick={() => setShowExportMenu(false)} />
-                <div className="absolute right-0 mt-2 w-48 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
-                  <button
-                    onClick={() => handleExport('json')}
-                    className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-white/5 flex items-center gap-3"
-                  >
-                    <FileText className="w-4 h-4 text-slate-400" />
-                    Export as JSON
-                  </button>
-                  <button
-                    onClick={() => handleExport('csv')}
-                    className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-white/5 flex items-center gap-3"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 text-slate-400" />
-                    Export as CSV
-                  </button>
-                  <button
-                    onClick={() => handleExport('pdf')}
-                    className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-white/5 flex items-center gap-3"
-                  >
-                    <FileText className="w-4 h-4 text-slate-400" />
-                    Print / Save as PDF
-                  </button>
+                <div className="fixed inset-0 z-40" onClick={() => setShowMore(false)} aria-hidden="true" />
+                <div role="menu" className="absolute right-0 mt-2 w-56 bg-slate-900 border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
+                  {comparable && (
+                    <MenuItem icon={<Scale className="w-4 h-4" />} onClick={() => { setPanel('compare'); setShowMore(false); }}>Compare plans</MenuItem>
+                  )}
+                  <MenuItem icon={<Sparkles className="w-4 h-4" />} onClick={() => { setPanel('pattern'); setShowMore(false); }}>Usage pattern</MenuItem>
                   <div className="border-t border-white/5" />
-                  <button
-                    onClick={handleCopy}
-                    className="w-full px-4 py-3 text-left text-sm text-slate-300 hover:bg-white/5 flex items-center gap-3"
-                  >
-                    {copied ? (
-                      <>
-                        <Check className="w-4 h-4 text-green-400" />
-                        <span className="text-green-400">Copied!</span>
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="w-4 h-4 text-slate-400" />
-                        Copy to Clipboard
-                      </>
-                    )}
-                  </button>
+                  <MenuItem icon={<FileText className="w-4 h-4" />} onClick={() => handleExport('json')}>Export JSON</MenuItem>
+                  <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} onClick={() => handleExport('csv')}>Export CSV</MenuItem>
+                  <MenuItem icon={<Download className="w-4 h-4" />} onClick={() => handleExport('pdf')}>Print / save PDF</MenuItem>
+                  <MenuItem icon={copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />} onClick={handleCopy}>
+                    {copied ? 'Copied' : 'Copy summary'}
+                  </MenuItem>
                 </div>
               </>
             )}
           </div>
 
-          <button
-            onClick={onReset}
-            className="text-sm text-slate-400 hover:text-white flex items-center gap-2 px-4 py-2 hover:bg-slate-800 rounded-lg transition-colors"
-          >
-            <RefreshCw className="w-4 h-4" /> New
+          <button onClick={onReset} className="text-sm px-4 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white font-medium">
+            New analysis
           </button>
         </div>
-      </div>
+      </header>
 
-      {/* Plan Fit Analysis Panel */}
-      {showPlanFit && (
-        <div className="animate-in fade-in slide-in-from-top-4 duration-500 bg-slate-900/60 backdrop-blur-xl border border-white/10 rounded-2xl p-8">
-          <PlanFitAnalyzer data={data} currentPlan={selectedPlan} onPlanChange={setSelectedPlan} />
+      {/* The answer: one card, one sentence, plain numbers */}
+      <section aria-labelledby="answer-title" className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 md:p-8 space-y-6">
+        <div>
+          <p className="text-xs uppercase tracking-wide text-slate-400">Your answer</p>
+          {comparable ? (
+            <>
+              <h3 id="answer-title" className="text-2xl md:text-3xl font-bold text-white mt-1">{headline}</h3>
+              <p className="text-slate-300 mt-2">
+                Difference: <span className="font-semibold text-white">{formatUsd(cmp.difference)} per month</span> (estimate at list prices).
+                {cmp.lowConfidence && <span className="block text-amber-300 text-sm mt-1">Based on under a week of data, so this is a rough guess.</span>}
+              </p>
+            </>
+          ) : (
+            <>
+              <h3 id="answer-title" className="text-2xl font-bold text-white mt-1">Nothing to compare yet</h3>
+              <p className="text-slate-300 mt-2">{notComparableReason}</p>
+            </>
+          )}
         </div>
+
+        {/* Plan choice as a simple radio group */}
+        {comparable && (
+        <fieldset>
+          <legend className="text-sm text-slate-400 mb-2">Which plan do you pay for?</legend>
+          <div className="flex flex-wrap gap-2">
+            {PLAN_KEYS.map(key => (
+              <label
+                key={key}
+                className={`cursor-pointer px-4 py-2 rounded-lg border text-sm font-medium focus-within:ring-2 focus-within:ring-indigo-400 ${
+                  key === selectedPlan
+                    ? 'bg-indigo-500 border-indigo-400 text-white'
+                    : 'bg-slate-900/40 border-slate-600 text-slate-300 hover:border-slate-400'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="plan"
+                  value={key}
+                  checked={key === selectedPlan}
+                  onChange={() => setSelectedPlan(key)}
+                  className="sr-only"
+                />
+                {key} · {formatUsd(PLANS[key].price)}/mo
+              </label>
+            ))}
+          </div>
+        </fieldset>
+        )}
+
+        {comparable && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="bg-slate-900/50 rounded-xl p-4">
+            <div className="text-xs text-slate-400">Your plan</div>
+            <div className="text-3xl font-bold text-white">{formatUsd(cmp.planPrice)}<span className="text-base text-slate-400 font-normal">/mo</span></div>
+          </div>
+          <div className="bg-slate-900/50 rounded-xl p-4">
+            <div className="text-xs text-slate-400">Pay-as-you-go (estimate)</div>
+            <div className="text-3xl font-bold text-white">{formatUsd(cmp.apiCostMonthly)}<span className="text-base text-slate-400 font-normal">/mo</span></div>
+          </div>
+        </div>
+        )}
+
+        {cmp.unpricedModels.length > 0 && (
+          <p className="text-xs text-amber-300">
+            Not counted, because no price is known: {cmp.unpricedModels.join(', ')}.
+          </p>
+        )}
+
+        <button
+          onClick={() => setShowDetails(!showDetails)}
+          aria-expanded={showDetails}
+          aria-controls="details"
+          className="flex items-center gap-2 text-sm text-indigo-300 hover:text-white"
+        >
+          {showDetails ? 'Hide details' : 'Show details'}
+          <ChevronDown className={`w-4 h-4 transition-transform ${showDetails ? 'rotate-180' : ''}`} aria-hidden="true" />
+        </button>
+      </section>
+
+      {/* Optional panels: one at a time */}
+      {panel === 'compare' && (
+        <PlanComparison
+          data={data}
+          selectedPlan={selectedPlan}
+          onSelect={setSelectedPlan}
+          onClose={() => setPanel(null)}
+        />
+      )}
+      {panel === 'pattern' && (
+        <section aria-label="Usage pattern" className="bg-slate-800/40 border border-white/5 rounded-2xl p-6 relative">
+          <button onClick={() => setPanel(null)} className="absolute top-4 right-4 text-sm text-slate-400 hover:text-white">Close</button>
+          <PlanFitAnalyzer data={data} />
+        </section>
       )}
 
-      {/* Plan Comparison Panel */}
-      {showPlanComparison && (
-        <div className="animate-in fade-in slide-in-from-top-4 duration-500">
-          <PlanComparison data={data} onClose={() => setShowPlanComparison(false)} />
-        </div>
-      )}
-
-      {/* Top Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatCard
-          title="Your Plan Cost"
-          value={`$${PLAN_LIMITS[selectedPlan].price}/mo`}
-          subtitle={selectedPlan}
-          icon={<DollarSign className="w-5 h-5" />}
-          delay={0}
-        />
-        <StatCard 
-          title="API Equivalent"
-          value={`$${analysis.apiEquivalentCost.toFixed(2)}`}
-          subtitle="Pay-as-you-go Value"
-          icon={<Activity className="w-5 h-5" />}
-          trend={analysis.isOverpaying ? 'down' : 'up'}
-          colorClass={analysis.isOverpaying ? 'text-green-400' : 'text-red-400'}
-          delay={100}
-        />
-        <StatCard 
-          title="Monthly Savings"
-          value={analysis.isOverpaying ? `$${analysis.savings.toFixed(2)}` : `-$${analysis.savings.toFixed(2)}`}
-          subtitle={analysis.isOverpaying ? "If you switch to API" : "You are saving money!"}
-          icon={<TrendingDown className="w-5 h-5" />}
-          colorClass={analysis.isOverpaying ? 'text-green-400' : 'text-slate-200'}
-          delay={200}
-        />
-        <StatCard 
-          title="Recommendation"
-          value={analysis.recommendedPlan === "API (Pay-As-You-Go)" ? "Switch to API" : "Keep Plan"}
-          subtitle="Based on strict cost"
-          icon={<BrainCircuit className="w-5 h-5" />}
-          colorClass="text-indigo-400"
-          delay={300}
-        />
-      </div>
-
-      {/* Main Content Split */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Left Column: Charts */}
-        <div className="lg:col-span-2 space-y-8">
-          
-          {/* Daily Usage Chart */}
-          <div 
-            className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 animate-in fade-in slide-in-from-bottom-8 duration-700 fill-mode-backwards"
-            style={{ animationDelay: '400ms' }}
-          >
-            <h3 className="text-lg font-semibold text-white mb-6">Daily Token Usage</h3>
-            <div className="h-[300px] w-full">
+      {/* Details: collapsed by default */}
+      {showDetails && (
+        <section id="details" aria-label="Details" className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 lg:col-span-2">
+            <h3 className="text-lg font-semibold text-white mb-4">Daily replies</h3>
+            <div className="h-[260px] w-full">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={data.usage.messages.by_day}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#334155" vertical={false} />
-                  <XAxis
-                    dataKey="date"
-                    tickFormatter={formatXAxisDate}
-                    stroke="#94a3b8"
-                    fontSize={12}
-                    interval={dateRange.spansMultipleMonths ? 'preserveStartEnd' : 0}
-                    angle={dateRange.spansMultipleMonths ? -45 : 0}
-                    textAnchor={dateRange.spansMultipleMonths ? 'end' : 'middle'}
-                    height={dateRange.spansMultipleMonths ? 60 : 30}
-                  />
-                  <YAxis 
-                    stroke="#94a3b8" 
-                    fontSize={12}
-                    tickFormatter={(val) => `${(val/1000).toFixed(0)}k`}
-                  />
-                  <Tooltip 
+                  <XAxis dataKey="date" tickFormatter={formatXAxisDate} stroke="#94a3b8" fontSize={12} />
+                  <YAxis stroke="#94a3b8" fontSize={12} allowDecimals={false} />
+                  <Tooltip
                     contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
-                    cursor={{ fill: '#334155', opacity: 0.4 }}
-                    formatter={(value: number) => [formatTokenNumber(value), 'Tokens']}
+                    formatter={(value: number) => [value, 'Replies']}
                   />
-                  <Bar dataKey="input" name="Input" stackId="a" fill="#6366f1" radius={[0, 0, 4, 4]} animationDuration={1500} />
-                  <Bar dataKey="output" name="Output" stackId="a" fill="#34d399" radius={[4, 4, 0, 0]} animationDuration={1500} />
+                  <Bar dataKey="count" fill="#6366f1" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
           </div>
 
-          {/* Model Breakdown & Ratio */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div 
-              className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 animate-in fade-in slide-in-from-bottom-8 duration-700 fill-mode-backwards"
-              style={{ animationDelay: '500ms' }}
-            >
-              <h3 className="text-lg font-semibold text-white mb-4">Model Distribution</h3>
-              <div className="h-[200px] w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={analysis.modelBreakdown}
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={60}
-                      outerRadius={80}
-                      paddingAngle={5}
-                      dataKey="value"
-                      animationDuration={1500}
-                    >
-                      {analysis.modelBreakdown.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip 
-                       contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
-                       formatter={(value: number) => formatTokenNumber(value)}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
-              <div className="flex flex-wrap gap-2 justify-center mt-4">
-                {analysis.modelBreakdown.map((entry, index) => (
-                  <div key={index} className="flex items-center text-xs text-slate-400">
-                    <div className="w-3 h-3 rounded-full mr-1" style={{ backgroundColor: COLORS[index % COLORS.length] }}></div>
-                    {entry.name}
-                  </div>
-                ))}
-              </div>
+          <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-white mb-4">Models</h3>
+            <div className="h-[200px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie data={modelBreakdown} cx="50%" cy="50%" innerRadius={55} outerRadius={80} paddingAngle={4} dataKey="value">
+                    {modelBreakdown.map((entry, index) => (
+                      <Cell key={entry.name} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{ backgroundColor: '#1e293b', borderColor: '#334155', color: '#f8fafc' }}
+                    formatter={(value: number) => formatTokenNumber(value)}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
             </div>
-
-            <div 
-              className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6 animate-in fade-in slide-in-from-bottom-8 duration-700 fill-mode-backwards"
-              style={{ animationDelay: '600ms' }}
-            >
-               <h3 className="text-lg font-semibold text-white mb-4">Input vs Output</h3>
-               <div className="flex flex-col h-full justify-center space-y-6">
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-indigo-400">Input (Context)</span>
-                      <span className="text-white">{formatTokenNumber(data.usage.tokens.input)}</span>
-                    </div>
-                    <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-                      <div 
-                        className="bg-indigo-500 h-2 rounded-full animate-in slide-in-from-left duration-1000" 
-                        style={{ width: `${(data.usage.tokens.input / (data.usage.tokens.input + data.usage.tokens.output)) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                  <div>
-                    <div className="flex justify-between text-sm mb-1">
-                      <span className="text-emerald-400">Output (Generation)</span>
-                      <span className="text-white">{formatTokenNumber(data.usage.tokens.output)}</span>
-                    </div>
-                    <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden">
-                      <div 
-                        className="bg-emerald-500 h-2 rounded-full animate-in slide-in-from-left duration-1000" 
-                        style={{ width: `${(data.usage.tokens.output / (data.usage.tokens.input + data.usage.tokens.output)) * 100}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                  <div className="text-xs text-slate-500 mt-4">
-                    High input ratio suggests RAG or context-heavy usage. High output ratio suggests creative writing or coding generation.
-                  </div>
-               </div>
-            </div>
+            <ul className="flex flex-wrap gap-3 justify-center mt-2 text-xs text-slate-400">
+              {modelBreakdown.map((entry, index) => (
+                <li key={entry.name} className="flex items-center gap-1">
+                  <span className="w-3 h-3 rounded-full" style={{ backgroundColor: COLORS[index % COLORS.length] }} aria-hidden="true" />
+                  {entry.name}
+                </li>
+              ))}
+            </ul>
           </div>
+
+          <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-white mb-4">Input and output</h3>
+            <div className="space-y-5">
+              <Meter label="Input (what you sent)" value={data.usage.tokens.input} percent={inputShare} barClass="bg-indigo-500" />
+              <Meter label="Output (what came back)" value={data.usage.tokens.output} percent={100 - inputShare} barClass="bg-emerald-500" />
+            </div>
+            {data.usage.tokens.cached ? (
+              <p className="text-xs text-slate-500 mt-4">Cache tokens: {formatTokenNumber(data.usage.tokens.cached)} (priced separately).</p>
+            ) : null}
+          </div>
+        </section>
+      )}
+
+      {/* Optional AI tip: off by default, and only for Claude reports that can be compared */}
+      {comparable && (
+      <section aria-labelledby="ai-title" className="bg-slate-800/40 border border-white/5 rounded-2xl p-6">
+        <div className="flex items-center justify-between gap-4 flex-wrap">
+          <div>
+            <h3 id="ai-title" className="text-lg font-semibold text-white">Optional AI tip</h3>
+            <p className="text-sm text-slate-400">Off unless you turn it on. Uses your own Gemini key.</p>
+          </div>
+          <button
+            onClick={() => setAiOpen(!aiOpen)}
+            aria-expanded={aiOpen}
+            className="text-sm px-4 py-2 rounded-lg border border-slate-600 text-slate-200 hover:bg-slate-800"
+          >
+            {aiOpen ? 'Hide' : 'Turn on'}
+          </button>
         </div>
 
-        {/* Right Column: AI Insights */}
-        <div 
-          className="lg:col-span-1 space-y-4 animate-in fade-in slide-in-from-right-8 duration-700 fill-mode-backwards"
-          style={{ animationDelay: '700ms' }}
-        >
-          <div className="bg-gradient-to-br from-indigo-900/50 to-purple-900/50 border border-indigo-500/30 rounded-xl p-6 sticky top-8 backdrop-blur-sm shadow-xl shadow-indigo-500/5">
-            <div className="flex items-center gap-2 mb-4">
-              <BrainCircuit className="w-6 h-6 text-indigo-400" />
-              <h3 className="text-xl font-bold text-white">AI Advisor</h3>
-            </div>
-            
-            <div className="min-h-[200px] text-slate-300 text-sm leading-relaxed space-y-4">
-              {loadingAi ? (
-                <div className="flex flex-col items-center justify-center py-10 space-y-4">
-                  <RefreshCw className="w-8 h-8 text-indigo-400 animate-spin" />
-                  <span className="text-indigo-300">Analyzing usage patterns...</span>
-                </div>
-              ) : (
-                aiAnalysis ? (
-                   <div className="whitespace-pre-line font-light animate-in fade-in duration-500">
-                     {aiAnalysis}
-                   </div>
-                ) : (
-                  <div className="text-center py-8 text-slate-500">
-                    <AlertTriangle className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                    Could not generate insight.
-                  </div>
-                )
-              )}
+        {aiOpen && (
+          <div className="mt-5 space-y-4">
+            <div className="text-sm text-slate-300">
+              <p className="font-medium text-white mb-1">This will be sent to Google:</p>
+              <ul className="list-disc list-inside text-slate-400">
+                {aiPayloadPreview(data, cmp, pattern).map(line => <li key={line}>{line}</li>)}
+              </ul>
+              <p className="text-slate-500 mt-2">No file text, no names, no messages.</p>
             </div>
 
-            <div className="mt-6 pt-6 border-t border-indigo-500/30">
-              <h4 className="text-indigo-200 font-medium mb-2">Verdict</h4>
-              <div className={`p-3 rounded-lg text-center font-bold transition-all duration-500 ${
-                analysis.isOverpaying 
-                  ? 'bg-green-500/20 text-green-300 border border-green-500/30 shadow-[0_0_15px_rgba(34,197,94,0.2)]' 
-                  : 'bg-slate-700/50 text-slate-300 border border-slate-600'
-              }`}>
-                {analysis.isOverpaying 
-                  ? `Switch & Save $${analysis.savings.toFixed(2)}/mo` 
-                  : "Keep Current Plan"}
+            <div>
+              <label htmlFor="gemini-key" className="block text-sm text-slate-300 mb-1">Your Gemini API key</label>
+              <div className="flex gap-2">
+                <input
+                  id="gemini-key"
+                  type={showKey ? 'text' : 'password'}
+                  value={aiKey}
+                  onChange={(e) => setAiKey(e.target.value)}
+                  autoComplete="off"
+                  spellCheck={false}
+                  className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowKey(!showKey)}
+                  aria-label={showKey ? 'Hide key' : 'Show key'}
+                  className="px-3 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-800"
+                >
+                  {showKey ? <EyeOff className="w-4 h-4" aria-hidden="true" /> : <Eye className="w-4 h-4" aria-hidden="true" />}
+                </button>
               </div>
+              <p className="text-xs text-slate-500 mt-1">Kept in this page only. It is not saved.</p>
+            </div>
+
+            <button
+              onClick={askAi}
+              disabled={!aiKey.trim() || aiState.status === 'loading'}
+              className="text-sm px-4 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {aiState.status === 'loading' ? 'Asking' : 'Get tip'}
+            </button>
+
+            <div role="status" aria-live="polite" className="text-sm text-slate-200">
+              {aiState.status === 'done' && <p className="whitespace-pre-line">{aiState.text}</p>}
+              {aiState.status === 'error' && <p className="text-amber-300">{aiState.error}</p>}
             </div>
           </div>
-        </div>
+        )}
+      </section>
+      )}
 
-      </div>
+      <p className="text-xs text-slate-500">
+        Everything here runs in your browser, except the optional AI tip.
+      </p>
     </div>
   );
 };
+
+const MenuItem: React.FC<{ icon: React.ReactNode; onClick: () => void; children: React.ReactNode }> = ({ icon, onClick, children }) => (
+  <button role="menuitem" onClick={onClick} className="w-full px-4 py-3 text-left text-sm text-slate-200 hover:bg-white/5 flex items-center gap-3">
+    <span className="text-slate-400" aria-hidden="true">{icon}</span>
+    {children}
+  </button>
+);
+
+const Meter: React.FC<{ label: string; value: number; percent: number; barClass: string }> = ({ label, value, percent, barClass }) => (
+  <div>
+    <div className="flex justify-between text-sm mb-1">
+      <span className="text-slate-300">{label}</span>
+      <span className="text-white">{formatTokenNumber(value)}</span>
+    </div>
+    <div className="w-full bg-slate-700 rounded-full h-2 overflow-hidden" role="presentation">
+      <div className={`${barClass} h-2 rounded-full`} style={{ width: `${Number.isFinite(percent) ? percent : 0}%` }} />
+    </div>
+  </div>
+);
 
 export default AnalysisDashboard;

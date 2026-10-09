@@ -1,7 +1,7 @@
 {
   "name": "@llm-usage/cli",
-  "version": "1.0.0",
-  "description": "CLI tool for analyzing LLM usage from Claude Code and other providers",
+  "version": "1.1.0",
+  "description": "See whether your Claude subscription costs more or less than pay-as-you-go. Local, private.",
   "type": "module",
   "bin": {
     "llm-usage": "./dist/index.js"
@@ -14,41 +14,37 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsup src/index.ts --format esm --dts --clean",
-    "build:cjs": "tsup src/index.ts --format cjs --clean --out-dir dist-cjs",
-    "build:binary": "npm run build:cjs && pkg dist-cjs/index.js --targets node18-win-x64,node18-macos-x64,node18-linux-x64 --out-path dist/bin",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "npm run build"
+    "test": "node --import tsx --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
     "chalk": "^5.3.0",
     "commander": "^12.1.0",
-    "glob": "^10.4.5",
     "ora": "^8.1.1"
   },
   "devDependencies": {
-    "@types/node": "^20.17.6",
-    "pkg": "^5.8.1",
+    "@types/node": "^22.14.0",
     "tsup": "^8.3.5",
     "tsx": "^4.19.2",
     "typescript": "^5.6.3"
   },
   "keywords": [
-    "llm",
-    "usage",
-    "analyzer",
     "claude",
-    "openai",
-    "tokens",
+    "claude-code",
+    "usage",
+    "cost",
+    "llm",
     "cli"
   ],
   "author": "",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/rhattala/llm-usage-analyzer.git",
+    "url": "https://github.com/beastllama/llm-usage-analyzer.git",
     "directory": "packages/cli"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.12.0"
   }
 }

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { Component, useState, useEffect, useCallback } from 'react';
 import Uploader from './components/Uploader';
 import AnalysisDashboard from './components/AnalysisDashboard';
 import HistoryView from './components/HistoryView';
@@ -10,6 +10,42 @@ import { storageService } from './services/storageService';
 type ViewMode = 'uploader' | 'dashboard' | 'trends';
 
 const LOCAL_SERVER_URL = 'http://localhost:3456';
+
+/** Catches render errors so one bad file cannot leave a blank page. */
+interface ErrorBoundaryProps {
+  children: React.ReactNode;
+  onReset: () => void;
+}
+
+interface ErrorBoundaryState {
+  error: Error | null;
+}
+
+class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+
+  render() {
+    if (this.state.error) {
+      return (
+        <div role="alert" className="max-w-md mx-auto text-center py-20 px-4 space-y-4">
+          <h2 className="text-xl font-bold text-white">Something went wrong showing this report.</h2>
+          <p className="text-slate-400 text-sm">Your saved reports are still there. Start over and try the file again.</p>
+          <button
+            onClick={() => { this.setState({ error: null }); this.props.onReset(); }}
+            className="px-5 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white font-medium"
+          >
+            Start over
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const App: React.FC = () => {
   const [data, setData] = useState<UsageReport | null>(null);
@@ -70,7 +106,6 @@ const App: React.FC = () => {
       }
     };
 
-    // Check immediately and then every 5 seconds
     checkConnection();
     const interval = setInterval(checkConnection, 5000);
     return () => clearInterval(interval);
@@ -99,17 +134,26 @@ const App: React.FC = () => {
       setLiveServerConnected(true);
     }
 
-    // Check if this is a new report (not from history)
-    if (!currentReportId) {
-      // Auto-save new uploads
+    // Live data is not saved, because it changes. Reports opened from history are not saved again.
+    if (fromLiveServer || currentReportId) return;
+
+    // Empty reports are not saved
+    const total = uploadedData.usage.tokens.input + uploadedData.usage.tokens.output;
+    if (total === 0 && uploadedData.usage.messages.count === 0) return;
+
+    try {
       const duplicate = storageService.findDuplicateReport(uploadedData);
-      if (!duplicate) {
-        const saved = storageService.saveReport(uploadedData);
-        setSavedReports(storageService.getReports());
-        setCurrentReportId(saved.id);
-      } else {
+      if (duplicate) {
+        // Update the saved copy, so a reload shows the same numbers the user just saw
+        storageService.updateReportData(duplicate.id, uploadedData);
         setCurrentReportId(duplicate.id);
+      } else {
+        const saved = storageService.saveReport(uploadedData);
+        setCurrentReportId(saved.id);
       }
+      setSavedReports(storageService.getReports());
+    } catch {
+      // Storage is blocked or full. The report still shows for this visit.
     }
   }, [currentReportId]);
 
@@ -125,7 +169,6 @@ const App: React.FC = () => {
     setCurrentReportId(null);
     setIsLiveData(false);
     setViewMode('uploader');
-    // Clear session to ensure clean state on refresh
     sessionStorage.removeItem('viewMode');
     sessionStorage.removeItem('currentReportId');
   };
@@ -151,10 +194,10 @@ const App: React.FC = () => {
     storageService.deleteReport(id);
     setSavedReports(storageService.getReports());
 
-    // If we deleted the current report, go back to uploader
     if (currentReportId === id) {
       setData(null);
       setCurrentReportId(null);
+      setViewMode('uploader');
     }
   };
 
@@ -167,113 +210,112 @@ const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#0B0C15] text-slate-200 font-sans selection:bg-indigo-500/30 overflow-x-hidden relative">
-      {/* Background Gradients */}
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-900/20 rounded-full blur-[120px] mix-blend-screen animate-pulse" style={{ animationDuration: '4s' }}></div>
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-900/20 rounded-full blur-[120px] mix-blend-screen animate-pulse" style={{ animationDuration: '6s' }}></div>
-        <div className="absolute top-[20%] left-[50%] transform -translate-x-1/2 w-[60%] h-[60%] bg-slate-900/0 rounded-full blur-[100px]"></div>
+    <div className="min-h-screen bg-[#0B0C15] text-slate-200 font-sans selection:bg-indigo-500/30 relative">
+      {/* Soft background glow. Motion is off for people who ask for reduced motion. */}
+      <div className="fixed inset-0 pointer-events-none" aria-hidden="true">
+        <div className="motion-safe:animate-pulse absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-indigo-900/20 rounded-full blur-[120px] mix-blend-screen" style={{ animationDuration: '4s' }}></div>
+        <div className="motion-safe:animate-pulse absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-900/20 rounded-full blur-[120px] mix-blend-screen" style={{ animationDuration: '6s' }}></div>
       </div>
 
-      <nav className="border-b border-white/5 bg-slate-950/30 backdrop-blur-xl sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+      <nav className="border-b border-white/5 bg-slate-950/60 backdrop-blur-xl sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 md:px-6 min-h-16 py-3 flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-500/20 ring-1 ring-white/20">
+            <div className="w-9 h-9 bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500 rounded-xl flex items-center justify-center" aria-hidden="true">
               <Activity className="w-5 h-5 text-white" />
             </div>
             <span className="font-bold text-lg tracking-tight text-white/90">Usage<span className="text-indigo-400">Analyzer</span></span>
           </div>
-          <div className="flex items-center gap-4">
-            {/* Trends Button */}
+          <div className="flex items-center gap-1 md:gap-3">
             {savedReports.length >= 1 && viewMode !== 'trends' && (
               <button
                 onClick={handleViewTrends}
-                className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors px-3 py-1.5 rounded-full hover:bg-white/5"
+                className="flex items-center gap-2 text-sm font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-full hover:bg-white/5"
               >
-                <TrendingUp className="w-4 h-4" />
+                <TrendingUp className="w-4 h-4" aria-hidden="true" />
                 <span>Trends</span>
               </button>
             )}
 
-            {/* History Dropdown */}
             {savedReports.length > 0 && viewMode !== 'trends' && (
               <div className="relative">
                 <button
                   onClick={() => setShowHistory(!showHistory)}
-                  className="flex items-center gap-2 text-sm font-medium text-slate-400 hover:text-white transition-colors px-3 py-1.5 rounded-full hover:bg-white/5"
+                  aria-expanded={showHistory}
+                  className="flex items-center gap-2 text-sm font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-full hover:bg-white/5"
                 >
-                  <History className="w-4 h-4" />
-                  <span>History</span>
-                  <ChevronDown className={`w-4 h-4 transition-transform ${showHistory ? 'rotate-180' : ''}`} />
+                  <History className="w-4 h-4" aria-hidden="true" />
+                  <span>Saved ({savedReports.length})</span>
+                  <ChevronDown className={`w-4 h-4 transition-transform ${showHistory ? 'rotate-180' : ''}`} aria-hidden="true" />
                 </button>
 
                 {showHistory && (
                   <>
-                    {/* Backdrop */}
-                    <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} />
-
-                    {/* Dropdown */}
-                    <div className="absolute right-0 mt-2 w-72 bg-slate-900/95 backdrop-blur-xl border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
+                    <div className="fixed inset-0 z-40" onClick={() => setShowHistory(false)} aria-hidden="true" />
+                    <div className="absolute right-0 mt-2 w-[min(18rem,calc(100vw-2rem))] bg-slate-900 border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
                       <div className="p-3 border-b border-white/5 flex items-center justify-between">
-                        <span className="text-xs font-medium text-slate-400">Saved Reports ({savedReports.length})</span>
-                        <button onClick={() => setShowHistory(false)} className="text-slate-400 hover:text-white">
-                          <X className="w-4 h-4" />
+                        <span className="text-xs font-medium text-slate-400">Saved reports</span>
+                        <button onClick={() => setShowHistory(false)} aria-label="Close saved reports" className="text-slate-400 hover:text-white">
+                          <X className="w-4 h-4" aria-hidden="true" />
                         </button>
                       </div>
-                      <div className="max-h-64 overflow-y-auto">
+                      <ul className="max-h-64 overflow-y-auto">
                         {savedReports.map((stored) => (
-                          <button
-                            key={stored.id}
-                            onClick={() => handleLoadFromHistory(stored)}
-                            className={`w-full px-4 py-3 text-left hover:bg-white/5 transition-colors flex items-center justify-between group ${
-                              currentReportId === stored.id ? 'bg-indigo-500/10 border-l-2 border-indigo-500' : ''
-                            }`}
-                          >
-                            <div className="flex-1 min-w-0">
+                          <li key={stored.id} className="group flex items-center hover:bg-white/5">
+                            <button
+                              onClick={() => handleLoadFromHistory(stored)}
+                              className={`flex-1 min-w-0 px-4 py-3 text-left ${
+                                currentReportId === stored.id ? 'border-l-2 border-indigo-500 bg-indigo-500/10' : ''
+                              }`}
+                            >
                               <div className="text-sm font-medium text-white truncate">{stored.name}</div>
-                              <div className="text-xs text-slate-500">{formatDate(stored.savedAt)}</div>
-                            </div>
+                              <div className="text-xs text-slate-500">Saved {formatDate(stored.savedAt)}</div>
+                            </button>
                             <button
                               onClick={(e) => handleDeleteFromHistory(stored.id, e)}
-                              className="p-1 text-slate-500 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                              aria-label={`Delete ${stored.name}`}
+                              className="p-3 text-slate-400 hover:text-red-300 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus:opacity-100"
                             >
-                              <Trash2 className="w-4 h-4" />
+                              <Trash2 className="w-4 h-4" aria-hidden="true" />
                             </button>
-                          </button>
+                          </li>
                         ))}
-                      </div>
+                      </ul>
                     </div>
                   </>
                 )}
               </div>
             )}
 
-            {viewMode === 'dashboard' && (
-              <button onClick={handleReset} className="text-xs font-medium text-slate-400 hover:text-white transition-colors">
-                New Analysis
-              </button>
-            )}
-            <a href="https://github.com/rhattala/llm-usage-analyzer" target="_blank" rel="noopener noreferrer" className="text-sm font-medium text-slate-400 hover:text-white transition-colors px-3 py-1.5 rounded-full hover:bg-white/5">GitHub</a>
+            <a
+              href="https://github.com/beastllama/llm-usage-analyzer"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm font-medium text-slate-300 hover:text-white px-3 py-1.5 rounded-full hover:bg-white/5"
+            >
+              GitHub
+            </a>
           </div>
         </div>
       </nav>
 
       <main className="relative z-10">
-        {viewMode === 'uploader' && (
-          <Uploader onDataLoaded={handleDataLoaded} onLoadDemo={handleLoadDemo} />
-        )}
-        {viewMode === 'dashboard' && data && (
-          <AnalysisDashboard
-            data={data}
-            onReset={handleReset}
-            isLiveData={isLiveData}
-            liveServerConnected={liveServerConnected}
-            onLiveRefresh={handleLiveRefresh}
-          />
-        )}
-        {viewMode === 'trends' && (
-          <HistoryView reports={savedReports} onBack={handleBackFromTrends} />
-        )}
+        <ErrorBoundary onReset={handleReset}>
+          {viewMode === 'uploader' && (
+            <Uploader onDataLoaded={handleDataLoaded} onLoadDemo={handleLoadDemo} />
+          )}
+          {viewMode === 'dashboard' && data && (
+            <AnalysisDashboard
+              data={data}
+              onReset={handleReset}
+              isLiveData={isLiveData}
+              liveServerConnected={liveServerConnected}
+              onLiveRefresh={handleLiveRefresh}
+            />
+          )}
+          {viewMode === 'trends' && (
+            <HistoryView reports={savedReports} onBack={handleBackFromTrends} />
+          )}
+        </ErrorBoundary>
       </main>
     </div>
   );

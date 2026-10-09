@@ -1,5 +1,7 @@
 import { UsageReport, StoredReport } from '../types';
-import { MODEL_PRICING } from '../constants';
+import { tokenCost, costByModel } from './pricing';
+
+const ESTIMATE_NOTE = 'Costs are estimates at list prices. Output tokens in local logs may be undercounted.';
 
 /**
  * Export a single report to JSON
@@ -29,21 +31,16 @@ export function exportToCSV(report: UsageReport, filename?: string): void {
  * Export daily breakdown to CSV
  */
 export function exportDailyToCSV(report: UsageReport, filename?: string): void {
-  const headers = ['Date', 'Messages', 'Input Tokens', 'Output Tokens', 'Total Tokens', 'Estimated Cost'];
+  const headers = ['Date', 'Replies', 'Input Tokens', 'Output Tokens', 'Total Tokens', 'Estimated Cost (USD)'];
+  const reportCost = costByModel(report.usage.tokens.by_model).cost;
+  const reportTokens = report.usage.tokens.input + report.usage.tokens.output;
   const rows = report.usage.messages.by_day.map(day => {
-    const totalTokens = day.input + day.output;
-    const cost = estimateDayCost(day.input, day.output, report);
-    return [
-      day.date,
-      day.count.toString(),
-      day.input.toString(),
-      day.output.toString(),
-      totalTokens.toString(),
-      `$${cost.toFixed(4)}`,
-    ];
+    const dayTokens = day.input + day.output;
+    const cost = reportTokens > 0 ? (dayTokens / reportTokens) * reportCost : 0;
+    return [day.date, day.count, day.input, day.output, dayTokens, cost.toFixed(4)];
   });
 
-  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const csv = toCsv(headers, rows);
   downloadFile(csv, filename || `daily-usage-${formatDate(new Date())}.csv`, 'text/csv');
 }
 
@@ -51,23 +48,21 @@ export function exportDailyToCSV(report: UsageReport, filename?: string): void {
  * Export model breakdown to CSV
  */
 export function exportModelBreakdownToCSV(report: UsageReport, filename?: string): void {
-  const headers = ['Model', 'Input Tokens', 'Output Tokens', 'Total Tokens', 'Input Cost', 'Output Cost', 'Total Cost'];
+  const headers = ['Model', 'Input Tokens', 'Output Tokens', 'Cache Read Tokens', 'Cache Write Tokens', 'Estimated Cost (USD)', 'Priced'];
   const rows = Object.entries(report.usage.tokens.by_model).map(([model, tokens]) => {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    const inputCost = (tokens.input / 1_000_000) * pricing.input;
-    const outputCost = (tokens.output / 1_000_000) * pricing.output;
+    const { cost, priced } = tokenCost(model, tokens);
     return [
       model,
-      tokens.input.toString(),
-      tokens.output.toString(),
-      (tokens.input + tokens.output).toString(),
-      `$${inputCost.toFixed(4)}`,
-      `$${outputCost.toFixed(4)}`,
-      `$${(inputCost + outputCost).toFixed(4)}`,
+      tokens.input,
+      tokens.output,
+      tokens.cache_read || 0,
+      tokens.cache_write || 0,
+      cost.toFixed(4),
+      priced ? 'yes' : 'no',
     ];
   });
 
-  const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+  const csv = toCsv(headers, rows);
   downloadFile(csv, filename || `model-usage-${formatDate(new Date())}.csv`, 'text/csv');
 }
 
@@ -76,54 +71,41 @@ export function exportModelBreakdownToCSV(report: UsageReport, filename?: string
  */
 function generateCSV(report: UsageReport): string {
   const lines: string[] = [];
+  const { cost } = costByModel(report.usage.tokens.by_model);
 
-  // Header section
   lines.push('LLM Usage Report');
-  lines.push(`Provider,${report.provider}`);
-  lines.push(`Source,${report.source}`);
-  lines.push(`Period Start,${report.period.start}`);
-  lines.push(`Period End,${report.period.end}`);
-  lines.push(`Plan,${report.plan.name}`);
-  lines.push(`Plan Price,$${report.plan.price_usd}`);
+  lines.push(`Provider,${csvCell(report.provider)}`);
+  lines.push(`Source,${csvCell(report.source)}`);
+  lines.push(`Period Start,${csvCell(report.period.start)}`);
+  lines.push(`Period End,${csvCell(report.period.end)}`);
+  lines.push(`Plan,${csvCell(report.plan.name)}`);
+  lines.push(ESTIMATE_NOTE);
   lines.push('');
 
-  // Summary section
   lines.push('SUMMARY');
   lines.push(`Total Input Tokens,${report.usage.tokens.input}`);
   lines.push(`Total Output Tokens,${report.usage.tokens.output}`);
   lines.push(`Total Tokens,${report.usage.tokens.input + report.usage.tokens.output}`);
-  lines.push(`Cached Tokens,${report.usage.tokens.cached || 0}`);
-  lines.push(`Message Count,${report.usage.messages.count}`);
-  lines.push(`Session Count,${report.usage.sessions.count}`);
+  lines.push(`Cache Tokens,${report.usage.tokens.cached || 0}`);
+  lines.push(`Replies,${report.usage.messages.count}`);
+  lines.push(`Estimated Cost (USD),${cost.toFixed(2)}`);
   lines.push('');
 
-  // Calculate total cost
-  let totalCost = 0;
-  for (const [model, tokens] of Object.entries(report.usage.tokens.by_model)) {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    totalCost += (tokens.input / 1_000_000) * pricing.input;
-    totalCost += (tokens.output / 1_000_000) * pricing.output;
-  }
-  lines.push(`Estimated API Cost,$${totalCost.toFixed(2)}`);
-  lines.push('');
-
-  // Model breakdown
   lines.push('MODEL BREAKDOWN');
-  lines.push('Model,Input Tokens,Output Tokens,Total Tokens,Estimated Cost');
-  for (const [model, tokens] of Object.entries(report.usage.tokens.by_model)) {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    const cost = (tokens.input / 1_000_000) * pricing.input + (tokens.output / 1_000_000) * pricing.output;
-    lines.push(`${model},${tokens.input},${tokens.output},${tokens.input + tokens.output},$${cost.toFixed(4)}`);
-  }
+  lines.push(toCsv(
+    ['Model', 'Input Tokens', 'Output Tokens', 'Estimated Cost (USD)'],
+    Object.entries(report.usage.tokens.by_model).map(([model, tokens]) => [
+      model, tokens.input, tokens.output, tokenCost(model, tokens).cost.toFixed(4),
+    ]),
+  ));
   lines.push('');
 
-  // Daily breakdown
   if (report.usage.messages.by_day.length > 0) {
     lines.push('DAILY BREAKDOWN');
-    lines.push('Date,Messages,Input Tokens,Output Tokens');
-    for (const day of report.usage.messages.by_day) {
-      lines.push(`${day.date},${day.count},${day.input},${day.output}`);
-    }
+    lines.push(toCsv(
+      ['Date', 'Replies', 'Input Tokens', 'Output Tokens'],
+      report.usage.messages.by_day.map(day => [day.date, day.count, day.input, day.output]),
+    ));
   }
 
   return lines.join('\n');
@@ -135,43 +117,47 @@ function generateCSV(report: UsageReport): string {
 export function exportToPDF(report: UsageReport): void {
   const html = generatePDFHTML(report);
 
-  // Open in new window for printing
   const printWindow = window.open('', '_blank');
   if (printWindow) {
     printWindow.document.write(html);
     printWindow.document.close();
-
-    // Auto-trigger print dialog
-    printWindow.onload = () => {
-      printWindow.print();
-    };
   }
 }
 
 /**
- * Generate HTML for PDF export
+ * Generate HTML for PDF export. Every user-supplied string is escaped.
  */
 function generatePDFHTML(report: UsageReport): string {
-  // Calculate costs
-  let totalCost = 0;
-  const modelCosts: Record<string, { input: number; output: number; total: number }> = {};
-
-  for (const [model, tokens] of Object.entries(report.usage.tokens.by_model)) {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    const inputCost = (tokens.input / 1_000_000) * pricing.input;
-    const outputCost = (tokens.output / 1_000_000) * pricing.output;
-    modelCosts[model] = { input: inputCost, output: outputCost, total: inputCost + outputCost };
-    totalCost += inputCost + outputCost;
-  }
-
+  const { cost } = costByModel(report.usage.tokens.by_model);
   const totalTokens = report.usage.tokens.input + report.usage.tokens.output;
-  const periodStart = new Date(report.period.start).toLocaleDateString();
-  const periodEnd = new Date(report.period.end).toLocaleDateString();
+  const periodStart = escapeHtml(new Date(report.period.start).toLocaleDateString());
+  const periodEnd = escapeHtml(new Date(report.period.end).toLocaleDateString());
+  const providerName = escapeHtml(report.provider.charAt(0).toUpperCase() + report.provider.slice(1));
+  const planName = escapeHtml(report.plan.name);
 
-  return `
-<!DOCTYPE html>
+  const modelRows = Object.entries(report.usage.tokens.by_model).map(([model, tokens]) => {
+    const { cost: modelCost, priced } = tokenCost(model, tokens);
+    return `
+        <tr>
+          <td>${escapeHtml(model)}</td>
+          <td class="number">${formatNumberWithCommas(tokens.input)}</td>
+          <td class="number">${formatNumberWithCommas(tokens.output)}</td>
+          <td class="number">${priced ? '$' + modelCost.toFixed(2) : 'not priced'}</td>
+        </tr>`;
+  }).join('');
+
+  const dayRows = report.usage.messages.by_day.slice(-10).reverse().map(day => `
+          <tr>
+            <td>${escapeHtml(day.date)}</td>
+            <td class="number">${day.count}</td>
+            <td class="number">${formatNumberWithCommas(day.input)}</td>
+            <td class="number">${formatNumberWithCommas(day.output)}</td>
+          </tr>`).join('');
+
+  return `<!DOCTYPE html>
 <html>
 <head>
+  <meta charset="utf-8" />
   <title>LLM Usage Report - ${periodStart} to ${periodEnd}</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -188,51 +174,23 @@ function generatePDFHTML(report: UsageReport): string {
     .header { margin-bottom: 32px; }
     .header-meta { color: #64748b; font-size: 14px; }
     .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin-bottom: 24px; }
-    .stat-card {
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-      padding: 16px;
-    }
+    .stat-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; }
     .stat-label { font-size: 12px; color: #64748b; text-transform: uppercase; }
     .stat-value { font-size: 24px; font-weight: 600; color: #1e293b; }
     table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-    th, td {
-      padding: 10px 12px;
-      text-align: left;
-      border-bottom: 1px solid #e2e8f0;
-    }
-    th {
-      background: #f8fafc;
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      color: #64748b;
-    }
+    th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
+    th { background: #f8fafc; font-weight: 600; font-size: 12px; text-transform: uppercase; color: #64748b; }
     td { font-size: 14px; }
     .number { text-align: right; font-variant-numeric: tabular-nums; }
-    .highlight { background: #fef3c7; }
-    .footer {
-      margin-top: 40px;
-      padding-top: 20px;
-      border-top: 1px solid #e2e8f0;
-      font-size: 12px;
-      color: #94a3b8;
-    }
-    @media print {
-      body { padding: 20px; }
-      .no-print { display: none; }
-    }
+    .note { margin-top: 24px; font-size: 13px; color: #64748b; }
+    .footer { margin-top: 40px; padding-top: 20px; border-top: 1px solid #e2e8f0; font-size: 12px; color: #94a3b8; }
+    @media print { body { padding: 20px; } }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>LLM Usage Report</h1>
-    <p class="header-meta">
-      ${report.provider.charAt(0).toUpperCase() + report.provider.slice(1)} •
-      ${periodStart} to ${periodEnd} •
-      ${report.plan.name}
-    </p>
+    <p class="header-meta">${providerName} • ${periodStart} to ${periodEnd} • ${planName}</p>
   </div>
 
   <div class="grid">
@@ -241,28 +199,16 @@ function generatePDFHTML(report: UsageReport): string {
       <div class="stat-value">${formatNumberWithCommas(totalTokens)}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Estimated Cost</div>
-      <div class="stat-value">$${totalCost.toFixed(2)}</div>
+      <div class="stat-label">Estimated Pay-as-you-go Cost</div>
+      <div class="stat-value">$${cost.toFixed(2)}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Messages</div>
+      <div class="stat-label">Replies</div>
       <div class="stat-value">${formatNumberWithCommas(report.usage.messages.count)}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">Sessions</div>
-      <div class="stat-value">${report.usage.sessions.count}</div>
-    </div>
-  </div>
-
-  <h2>Token Usage</h2>
-  <div class="grid">
-    <div class="stat-card">
-      <div class="stat-label">Input Tokens</div>
-      <div class="stat-value">${formatNumberWithCommas(report.usage.tokens.input)}</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-label">Output Tokens</div>
-      <div class="stat-value">${formatNumberWithCommas(report.usage.tokens.output)}</div>
+      <div class="stat-label">Input / Output</div>
+      <div class="stat-value">${formatNumberWithCommas(report.usage.tokens.input)} / ${formatNumberWithCommas(report.usage.tokens.output)}</div>
     </div>
   </div>
 
@@ -273,53 +219,34 @@ function generatePDFHTML(report: UsageReport): string {
         <th>Model</th>
         <th class="number">Input</th>
         <th class="number">Output</th>
-        <th class="number">Cost</th>
+        <th class="number">Estimated Cost</th>
       </tr>
     </thead>
-    <tbody>
-      ${Object.entries(report.usage.tokens.by_model).map(([model, tokens]) => `
-        <tr>
-          <td>${model}</td>
-          <td class="number">${formatNumberWithCommas(tokens.input)}</td>
-          <td class="number">${formatNumberWithCommas(tokens.output)}</td>
-          <td class="number">$${modelCosts[model]?.total.toFixed(4) || '0.00'}</td>
-        </tr>
-      `).join('')}
+    <tbody>${modelRows}
     </tbody>
   </table>
 
-  ${report.usage.messages.by_day.length > 0 ? `
-    <h2>Daily Activity (Last 10 Days)</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Date</th>
-          <th class="number">Messages</th>
-          <th class="number">Input Tokens</th>
-          <th class="number">Output Tokens</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${report.usage.messages.by_day.slice(-10).reverse().map(day => `
-          <tr>
-            <td>${day.date}</td>
-            <td class="number">${day.count}</td>
-            <td class="number">${formatNumberWithCommas(day.input)}</td>
-            <td class="number">${formatNumberWithCommas(day.output)}</td>
-          </tr>
-        `).join('')}
-      </tbody>
-    </table>
-  ` : ''}
+  ${dayRows ? `
+  <h2>Last 10 Active Days</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th class="number">Replies</th>
+        <th class="number">Input</th>
+        <th class="number">Output</th>
+      </tr>
+    </thead>
+    <tbody>${dayRows}
+    </tbody>
+  </table>` : ''}
 
-  <div class="footer">
-    Generated by LLM Usage Analyzer • ${new Date().toLocaleString()}
-  </div>
+  <p class="note">${escapeHtml(ESTIMATE_NOTE)}</p>
+
+  <div class="footer">Generated by LLM Usage Analyzer • ${escapeHtml(new Date().toLocaleString())}</div>
 
   <script>
-    // Auto-print when loaded
     window.onload = function() {
-      // Slight delay to ensure styles are applied
       setTimeout(function() { window.print(); }, 250);
     };
   </script>
@@ -343,13 +270,7 @@ export async function copyToClipboard(report: UsageReport): Promise<boolean> {
 
 function generateClipboardText(report: UsageReport): string {
   const totalTokens = report.usage.tokens.input + report.usage.tokens.output;
-  let totalCost = 0;
-
-  for (const [model, tokens] of Object.entries(report.usage.tokens.by_model)) {
-    const pricing = MODEL_PRICING[model] || MODEL_PRICING['default'];
-    totalCost += (tokens.input / 1_000_000) * pricing.input;
-    totalCost += (tokens.output / 1_000_000) * pricing.output;
-  }
+  const { cost } = costByModel(report.usage.tokens.by_model);
 
   return `LLM Usage Report
 Provider: ${report.provider}
@@ -360,13 +281,15 @@ Summary:
 - Total Tokens: ${formatNumberWithCommas(totalTokens)}
 - Input Tokens: ${formatNumberWithCommas(report.usage.tokens.input)}
 - Output Tokens: ${formatNumberWithCommas(report.usage.tokens.output)}
-- Messages: ${report.usage.messages.count}
-- Estimated Cost: $${totalCost.toFixed(2)}
+- Replies: ${report.usage.messages.count}
+- Estimated Pay-as-you-go Cost: $${cost.toFixed(2)}
 
 Models Used:
 ${Object.entries(report.usage.tokens.by_model)
   .map(([model, tokens]) => `- ${model}: ${formatNumberWithCommas(tokens.input + tokens.output)} tokens`)
   .join('\n')}
+
+${ESTIMATE_NOTE}
 `;
 }
 
@@ -395,10 +318,28 @@ function formatNumberWithCommas(num: number): string {
   return num.toLocaleString();
 }
 
-function estimateDayCost(input: number, output: number, report: UsageReport): number {
-  // Use first model's pricing as estimate, or default
-  const firstModel = Object.keys(report.usage.tokens.by_model)[0];
-  const pricing = firstModel ? MODEL_PRICING[firstModel] : MODEL_PRICING['default'];
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
 
-  return (input / 1_000_000) * pricing.input + (output / 1_000_000) * pricing.output;
+/**
+ * Make one CSV cell safe for spreadsheets:
+ * quote when needed, and prefix formula triggers (= + - @) so Excel does not run them.
+ */
+export function csvCell(value: string | number): string {
+  let text = String(value);
+  if (/^[=+\-@\t\r]/.test(text)) text = "'" + text;
+  if (/[",\n\r]/.test(text) || text.startsWith("'")) {
+    return '"' + text.replace(/"/g, '""') + '"';
+  }
+  return text;
+}
+
+function toCsv(headers: string[], rows: Array<Array<string | number>>): string {
+  return [headers.map(csvCell).join(','), ...rows.map(r => r.map(csvCell).join(','))].join('\n');
 }

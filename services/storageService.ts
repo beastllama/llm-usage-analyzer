@@ -60,13 +60,37 @@ export const storageService = {
    * Get all saved reports
    */
   getReports(): StoredReport[] {
+    let data: string | null = null;
     try {
-      const data = localStorage.getItem(STORAGE_KEYS.USAGE_HISTORY);
-      return data ? JSON.parse(data) : [];
+      data = localStorage.getItem(STORAGE_KEYS.USAGE_HISTORY);
+      const parsed = data ? JSON.parse(data) : [];
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
-      console.error('Failed to parse stored reports');
+      // Keep the unreadable copy so it is not silently overwritten on the next save
+      if (data) {
+        try {
+          localStorage.setItem(`${STORAGE_KEYS.USAGE_HISTORY}_unreadable_${Date.now()}`, data);
+          localStorage.removeItem(STORAGE_KEYS.USAGE_HISTORY);
+        } catch {
+          // Storage unavailable. Nothing more to do.
+        }
+      }
+      console.error('Saved reports could not be read. A backup copy was kept.');
       return [];
     }
+  },
+
+  /**
+   * Replace the data of an existing saved report (keeps its id and name)
+   */
+  updateReportData(id: string, report: UsageReport): StoredReport | undefined {
+    const history = this.getReports();
+    const existing = history.find(r => r.id === id);
+    if (!existing) return undefined;
+    existing.report = report;
+    existing.savedAt = new Date().toISOString();
+    localStorage.setItem(STORAGE_KEYS.USAGE_HISTORY, JSON.stringify(history));
+    return existing;
   },
 
   /**

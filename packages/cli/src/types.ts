@@ -1,15 +1,23 @@
-// Shared types for CLI - mirrors main app types
+// Shared types for CLI - mirrors main app types (types.ts at the repo root)
 
 export interface TokenUsage {
   input: number;
   output: number;
   cached?: number;
-  by_model: Record<string, { input: number; output: number }>;
+  // input excludes cache tokens; cache_read and cache_write are priced separately
+  by_model: Record<string, { input: number; output: number; cache_read?: number; cache_write?: number }>;
+}
+
+export interface DayUsage {
+  date: string; // YYYY-MM-DD, local calendar day
+  count: number; // replies (one per API response)
+  input: number;
+  output: number;
 }
 
 export interface UsageReport {
-  provider: 'anthropic' | 'openai' | 'google' | 'other';
-  source: 'local_agent' | 'browser_extension' | 'api' | 'manual_upload' | 'demo';
+  provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'other';
+  source: 'local_agent' | 'browser_extension' | 'api' | 'manual_upload' | 'demo' | 'manual_entry';
   period: {
     start: string; // ISO Date string
     end: string;   // ISO Date string
@@ -23,7 +31,7 @@ export interface UsageReport {
     tokens: TokenUsage;
     messages: {
       count: number;
-      by_day: Array<{ date: string; count: number; input: number; output: number }>;
+      by_day: DayUsage[];
     };
     sessions: {
       count: number;
@@ -31,10 +39,14 @@ export interface UsageReport {
   };
 }
 
+// One line of a Claude Code transcript. Only the fields the scanner reads.
 export interface ClaudeMessage {
   parentUuid?: string;
   sessionId?: string;
+  requestId?: string;
+  timestamp?: string;
   message?: {
+    id?: string;
     model?: string;
     role?: string;
     usage?: {
@@ -42,10 +54,17 @@ export interface ClaudeMessage {
       output_tokens?: number;
       cache_creation_input_tokens?: number;
       cache_read_input_tokens?: number;
-      service_tier?: string;
     };
   };
-  timestamp?: string;
+}
+
+// Status-line JSON that Claude Code sends on stdin. Only the rate-limit fields are used.
+export interface StatusLineInput {
+  session_id?: string;
+  rate_limits?: {
+    five_hour?: { used_percentage?: number; resets_at?: number };
+    seven_day?: { used_percentage?: number; resets_at?: number };
+  };
 }
 
 export interface ScanOptions {
@@ -55,10 +74,6 @@ export interface ScanOptions {
   output?: string;
   json?: boolean;
   verbose?: boolean;
-}
-
-export interface AnalyzeOptions {
-  plan?: string;
-  price?: number;
-  verbose?: boolean;
+  /** Keep days from earlier scans, because Claude Code deletes transcripts after 30 days by default. */
+  history?: boolean;
 }

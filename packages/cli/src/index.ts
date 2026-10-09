@@ -3,41 +3,44 @@ import { program } from 'commander';
 import { scanCommand } from './commands/scan.js';
 import { analyzeCommand } from './commands/analyze.js';
 import { serveCommand } from './commands/serve.js';
+import { statuslineCommand } from './commands/statusline.js';
+import { limitsCommand } from './commands/limits.js';
 
 const VERSION = '1.0.0';
 
 program
   .name('llm-usage')
-  .description('Analyze your LLM usage patterns from Claude Code and other providers')
+  .description('See whether your Claude subscription costs more or less than pay-as-you-go')
   .version(VERSION);
 
-// Add commands
 program.addCommand(scanCommand);
 program.addCommand(analyzeCommand);
 program.addCommand(serveCommand);
+program.addCommand(statuslineCommand);
+program.addCommand(limitsCommand);
 
-// Default action (no command) - show help
 program.action(() => {
   console.log(`
-  🔍 LLM Usage Analyzer CLI v${VERSION}
+  🔍 LLM Usage Analyzer v${VERSION}
 
-  Analyze your Claude Code usage to determine if you're on the right plan.
+  Start here:
+    scan        Read Claude Code history and write usage_report.json
+    analyze     Compare pay-as-you-go cost with each Claude plan
 
-  Commands:
-    scan      Scan Claude Code local data and generate a usage report
-    analyze   Analyze a usage report and show cost recommendations
-    serve     Start a local server for the web dashboard to connect
+  Live limits (Pro and Max):
+    statusline  Claude Code status line. Shows your live 5-hour and weekly %
+    limits      Downgrade check from those readings
+
+  Dashboard:
+    serve       Run a localhost server the web dashboard can read
 
   Examples:
-    $ llm-usage scan                    # Scan all data, output usage_report.json
-    $ llm-usage scan --days 30          # Only last 30 days
-    $ llm-usage scan --json | jq        # Output JSON for piping
-    $ llm-usage analyze                 # Analyze usage_report.json
-    $ llm-usage analyze --plan "Claude Max" --price 100
-    $ llm-usage serve                   # Start server on localhost:3456
-    $ llm-usage serve --port 8080       # Use custom port
+    $ llm-usage scan                     # all history, plus saved older days
+    $ llm-usage scan --days 30           # last 30 days only
+    $ llm-usage analyze                  # compare with each plan
+    $ llm-usage limits --plan max20x     # would a lower plan have fit?
 
-  For more info, run any command with --help
+  Run any command with --help for more.
   `);
 });
 

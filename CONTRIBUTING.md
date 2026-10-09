@@ -1,92 +1,56 @@
-# Contributing to LLM Usage Analyzer
+# Contributing
 
-Thanks for your interest in contributing! This project helps Claude users understand their usage patterns and choose the right subscription plan.
+Thanks for helping! This tool answers one question for Claude users: **is my subscription worth it?**
 
-## Quick Start
+## 🚀 Setup
 
 ```bash
-# Clone the repo
-git clone https://github.com/rhattala/llm-usage-analyzer.git
+git clone https://github.com/beastllama/llm-usage-analyzer.git
 cd llm-usage-analyzer
-
-# Install and setup
-npm run setup
-
-# Start development (web + CLI server)
-npm start
+npm run setup        # installs everything, builds the CLI, links `llm-usage`
+npm start            # dashboard on localhost:5173 + local server on localhost:3456
 ```
 
-## Project Structure
+Needs Node 22.12+.
 
-```
-llm-usage-analyzer/
-├── App.tsx                 # Main React app
-├── components/             # React components
-│   ├── Uploader.tsx        # File upload + server detection
-│   ├── AnalysisDashboard.tsx  # Main dashboard
-│   ├── PlanFitAnalyzer.tsx    # Plan recommendation
-│   └── ...
-├── services/               # Business logic
-│   ├── analysisService.ts  # Usage calculations
-│   └── storageService.ts   # LocalStorage management
-├── packages/
-│   └── cli/                # CLI tool (llm-usage command)
-│       └── src/
-│           ├── commands/   # CLI commands
-│           └── parsers/    # Claude data parsers
-└── constants.ts            # Plan limits, mock data
+## ✅ Before you open a PR
+
+```bash
+npm run typecheck && npm test && npm run build
+cd packages/cli && npm run typecheck && npm test && npm run build
 ```
 
-## How to Contribute
+CI runs the same checks on every pull request.
 
-### Report Bugs
-- Open an issue with steps to reproduce
-- Include your OS and Node version
-- Attach a screenshot if relevant
+## 🧭 Where things live
 
-### Suggest Features
-- Open a feature request issue
-- Explain the use case
-- Bonus: include a mockup or example
+| Path | What's there |
+|---|---|
+| `services/pricing.ts` | **All prices and plan multipliers.** Change prices here only. |
+| `services/analysisService.ts` | Monthly estimate, verdict, usage pattern |
+| `components/AnalysisDashboard.tsx` | The main screen. One answer first, details behind a click. |
+| `packages/cli/src/parsers/claude.ts` | Reads Claude Code transcripts. Counts each reply once. |
+| `packages/cli/src/limits.ts` | Status-line readings and the downgrade check |
+| `packages/cli/src/pricing.ts` | CLI copy of `services/pricing.ts`. **Keep the two in sync.** |
 
-### Submit Code
+## 📐 Rules we keep
 
-1. Fork the repo
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Make your changes
-4. Test locally with `npm start`
-5. Commit with a clear message
-6. Open a PR
+- **Never guess.** If a price, limit, or model is unknown, show "unpriced" or "not published." Don't fill the gap.
+- **Plain language.** Short sentences. One primary action per screen.
+- **Private by default.** No network calls unless the user turns them on. Never send file text.
+- **Cite the source.** New prices or plan facts need a link to the official page in the PR.
 
-### Code Style
+## 🐛 Reporting bugs
 
-- TypeScript for all new code
-- Functional React components with hooks
-- Tailwind CSS for styling
-- Keep PRs focused - one feature per PR
+Include: your OS, Node version, which command or screen, and the exact message. Don't attach real usage reports. They contain your activity.
 
-## Ideas for Contributions
+## 🔐 Security
 
-Here are some areas where help is welcome:
+Report security problems privately. See [SECURITY.md](SECURITY.md).
 
-### Easy (Good First Issues)
-- [ ] Add dark/light mode toggle
-- [ ] Improve mobile responsiveness
-- [ ] Add more export formats (Markdown, Excel)
-- [ ] Better error messages for invalid files
+## 💡 Good first issues
 
-### Medium
-- [ ] Support for OpenAI/ChatGPT usage data
-- [ ] Add cost projections for future usage
-- [ ] Weekly/monthly usage summaries
-- [ ] Browser extension for automatic data collection
-
-### Advanced
-- [ ] Multi-provider comparison (Claude vs GPT vs etc)
-- [ ] Usage anomaly detection
-- [ ] Team/organization usage aggregation
-- [ ] API rate limit predictions
-
-## Questions?
-
-Open an issue or start a discussion. We're happy to help!
+- Add a test for a formatter in `services/exportService.ts`
+- Improve an error message in `components/Uploader.tsx`
+- Add a model to `services/pricing.ts`, with its source link
+- Make a screen work with the keyboard only, and say what you tested
