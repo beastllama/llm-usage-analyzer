@@ -77,16 +77,20 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 
 ✅ **Counted:**
 - Each Claude reply once, even when Claude Code writes several log lines for it
-- Input, output, and cache tokens, each priced at list prices
+- Input, output, and cache tokens, each priced at Anthropic's standard API list prices
 - Days by your local calendar
 
-⚠️ **Limits of the estimate:**
-- **Not exact.** List prices, not your invoice.
+⚠️ **The estimate is not your invoice:**
+- **List prices, checked 2026-10-09.** Plan prices are the monthly price before tax. API prices can change.
+- **Left out of the estimate:** fast mode (about 2x the Opus price, and billed from usage credits on Pro and Max), the Batch discount, Priority Tier, US-only inference (1.1x), web search ($10 per 1,000 searches) and other tool fees.
+- **Advisor tokens are not counted.** If you use Claude Code's experimental advisor, the advisor model's tokens are billed at its own rates and are not in the totals this tool reads.
+- **Fable models are not covered by Pro limits.** Pro bills them as usage credits. Max gives them a separate cap (up to 50% of the weekly limit). The estimate prices them at list rates either way.
 - **Output tokens are a lower bound.** For each reply the largest count in the log is used. Some replies only log an early count, so the true output is higher.
-- **Anthropic does not publish a daily cap.** So this tool makes no "you fit in Pro" claim from message counts.
-- **Claude.ai web chats are not in Claude Code logs.** Use the web export in the dashboard for those.
-- **Transcripts are deleted after 30 days** by default. This tool keeps older days it has already seen in `~/.llm-usage/history.json`. Scan regularly to keep history. You can raise the limit with `cleanupPeriodDays` in Claude Code's settings.
-- **Models without a known price are left out**, and the dashboard says which ones.
+- **Cache writes are priced as logged.** A 1-hour cache write costs 2x the input price. On an API key Claude Code caches for 5 minutes by default, so a real API bill for the same work would differ.
+- **Only this computer's Claude Code history is counted.** Claude Code on other computers or on the web, and claude.ai chats, also use your plan but are not in these logs. A claude.ai chat export shows activity only. It has no prices.
+- **Plans have a 5-hour limit and a weekly limit, not a daily one.** Anthropic does not publish their sizes, so this tool makes no "you fit in Pro" claim from message counts.
+- **Old transcripts are deleted.** By default Claude Code deletes session transcripts after 30 days (`cleanupPeriodDays` in its settings). `llm-usage scan` keeps the days it has already seen in `~/.llm-usage/history.json`. The `npx` page only reads what Claude Code still has.
+- **Models without a known price are left out**, and the dashboard says which ones. A model newer than this tool's price table is left out too. It is not priced like an older model.
 - **Haiku 5.5 requests with a prompt over 100K tokens** are priced at the higher rate that applies to the whole request.
 
 ---
@@ -135,5 +139,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+LLM Usage Analyzer is an independent, unofficial project. It is not affiliated with, endorsed by, or sponsored by Anthropic. Claude and Claude Code are trademarks of Anthropic PBC. Prices shown are public list prices and can change.
 
 The page bundles open-source packages. Their licenses are in `THIRD_PARTY_NOTICES.txt`, which ships inside the npm package and is also served on the page at `/THIRD_PARTY_NOTICES.txt`.

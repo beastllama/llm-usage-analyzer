@@ -1,5 +1,5 @@
 {
   "name": "LLM Usage Analyzer",
-  "description": "A dashboard to analyze LLM usage patterns, compare subscription costs against API pay-as-you-go pricing, and receive AI-powered recommendations for the optimal plan.",
+  "description": "See whether your Claude subscription costs more or less than pay-as-you-go API pricing, from your own usage. Runs on your computer. No login, no keys.",
   "requestFramePermissions": []
 }

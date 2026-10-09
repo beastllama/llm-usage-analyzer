@@ -4,6 +4,8 @@ Code kept for reference. It is not part of the product, is not built in CI, and 
 
 ## extension/ (browser extension, archived)
 
+> **Archived. Not supported.** It was written against `console.anthropic.com`, which now redirects to `platform.claude.com`.
+
 **Why it was archived**
 
 - It collects from the Anthropic and OpenAI consoles, which are API billing. The product is about Claude Pro and Max subscriptions.
@@ -25,8 +27,8 @@ An OpenAI usage import and a Gemini "tip" feature. Both asked the user to paste 
 **Why they were retired**
 
 - The product is simple and key-free: one command, no login.
-- OpenAI's usage data needs an organization **admin** key. A login-based route is not available for this.
+- OpenAI's usage data needs an organization **admin** key. We found no login-based route for it.
 - Gemini's sign-in route would need its own Google Cloud project and consent screen. Not worth it for a tip.
-- Anthropic does not allow Claude Free/Pro/Max sign-in tokens in other tools, so there is no sign-in route for Claude either.
+- Anthropic's terms do not let third-party tools offer Claude.ai login or route requests through Free, Pro, or Max plan credentials (see https://code.claude.com/docs/en/legal-and-compliance), so there is no sign-in route for Claude either.
 
 **To revive them**, move the files back into `services/` and `tests/`, add `@google/genai` for the Gemini one, and re-add the UI. Note the web page's policy `connect-src 'self'` (CLI-served mode) would block them.

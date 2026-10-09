@@ -69,26 +69,6 @@ export interface UserSettings {
   lastSyncedAt?: string;
 }
 
-// Extended plan info with limits (for recommendation engine)
-export interface PlanInfo {
-  name: string;
-  provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'other';
-  price_usd: number;
-  billing: 'monthly' | 'annual' | 'payg';
-  type: 'subscription' | 'payg';
-  limits?: {
-    estimated_messages_per_day?: number;
-    tokens_per_month?: number;
-    rate_limit_rpm?: number;
-    models_included?: string[];
-  };
-  pricing?: {
-    input_per_1m_tokens: number;
-    output_per_1m_tokens: number;
-    by_model?: Record<string, { input: number; output: number }>;
-  };
-}
-
 // Trend analysis types
 export interface TrendData {
   period: string; // "2024-01" for monthly

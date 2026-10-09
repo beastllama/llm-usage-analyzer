@@ -66,10 +66,45 @@ test('cache tokens are priced, not dropped', () => {
   assert.equal(withCache.cacheRead, 2 * 0.05);
 });
 
-test('model IDs with dates resolve to the right family', () => {
+test('a model id is its table key, or the key plus a date, -latest, or a context tag. Nothing else is guessed', () => {
   assert.equal(priceFor('claude-opus-5-5-20260315')?.input, 4);
-  assert.equal(priceFor('gpt-4o-mini-2024-07-18')?.input, 0.15);
-  assert.equal(priceFor('gpt-4o-2024-05-13')?.input, 2.5);
+  assert.equal(priceFor('claude-sonnet-4-5-20250929')?.input, 3);
+  assert.equal(priceFor('claude-sonnet-4-5-20250929[1m]')?.input, 3);
+  assert.equal(priceFor('claude-opus-4-6[1m]')?.input, 5);
+  assert.equal(priceFor('claude-3-5-haiku-latest')?.input, 0.8);
+  // Opus 5.5 is not Opus 5, and Opus 4 is not Opus 4.5
+  assert.equal(priceFor('claude-opus-5-5')?.input, 4);
+  assert.equal(priceFor('claude-opus-4-20250514')?.input, 15);
+  assert.equal(priceFor('claude-opus-4-1-20250805')?.input, 15);
+  assert.equal(priceFor('claude-opus-4-5-20251101')?.input, 5);
+  assert.equal(priceFor('claude-sonnet-4-20250514')?.input, 3);
+  // A newer id that is not in the table must not borrow an older model's price
+  assert.equal(priceFor('claude-opus-5-6'), null);
+  assert.equal(priceFor('claude-opus-5-6-20261201'), null);
+  assert.equal(priceFor('claude-sonnet-5-6'), null);
+  assert.equal(priceFor('claude-haiku-5-6'), null);
+  assert.equal(priceFor('claude-fable-5-2'), null);
+  assert.equal(priceFor('claude-mythos-preview'), null);
+});
+
+test('Fable and Mythos use the published prices and their own cache-read rates', () => {
+  const fable51 = priceFor('claude-fable-5-1')!;
+  assert.deepEqual([fable51.input, fable51.output, fable51.cacheRead, fable51.cacheWrite, fable51.cacheWrite1h], [10, 50, 0.25, 12.5, 20]);
+  const fable5 = priceFor('claude-fable-5')!;
+  assert.deepEqual([fable5.input, fable5.output, fable5.cacheRead], [10, 50, 1]);
+  assert.equal(priceFor('claude-mythos-5-1')?.cacheRead, 0.25);
+  assert.equal(priceFor('claude-mythos-5')?.cacheRead, 1);
+});
+
+test('retired Opus 4 and 4.1 are priced at their last listed rate', () => {
+  const p = priceFor('claude-opus-4-1')!;
+  assert.deepEqual([p.input, p.output, p.cacheRead, p.cacheWrite, p.cacheWrite1h], [15, 75, 1.5, 18.75, 30]);
+});
+
+test('models from other companies are not priced, because this tool is for Claude plans', () => {
+  assert.equal(priceFor('gpt-4o'), null);
+  assert.equal(priceFor('gpt-4o-2024-05-13'), null);
+  assert.equal(priceFor('o1-2024-12-17'), null);
 });
 
 test('the usage pattern reports only facts, with calendar days and active days', () => {
@@ -133,12 +168,6 @@ test('a report spanning two months is split between them, not dumped into the fi
 test('span counts calendar days, not hours: 20:00 on day 1 to 08:00 on day 9 is 9 days', () => {
   assert.equal(spanDays(new Date(2026, 9, 1, 20, 0).toISOString(), new Date(2026, 9, 9, 8, 0).toISOString()), 9);
   assert.equal(spanDays(new Date(2026, 9, 3, 20, 0).toISOString(), new Date(2026, 9, 9, 8, 0).toISOString()), 7);
-});
-
-test('o1 variants are not priced at the o1 rate, because no verified price is known', () => {
-  assert.equal(priceFor('o1-mini-2024-09-12'), null);
-  assert.equal(priceFor('o1-preview')?.input ?? null, null);
-  assert.equal(priceFor('o1-2024-12-17')?.input, 15);
 });
 
 test('1-hour cache writes are priced at 2x input, not at the 5-minute rate', () => {

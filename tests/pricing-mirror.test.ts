@@ -14,5 +14,5 @@ const body = (file: string, end?: string) => {
 test('the CLI price table is identical to the web app price table', () => {
   const web = body('services/pricing.ts');
   const cli = body('packages/cli/src/pricing.ts', '// Short names for the command line');
-  assert.equal(cli, web, 'run the copy step again: packages/cli/src/pricing.ts must match services/pricing.ts');
+  assert.equal(cli, web, 'run "npm run sync:pricing": packages/cli/src/pricing.ts must match services/pricing.ts');
 });

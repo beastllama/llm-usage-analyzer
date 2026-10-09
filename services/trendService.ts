@@ -233,7 +233,7 @@ export function getModelDistribution(allReports: StoredReport[]): Array<{
     .map(([model, s]) => {
       const modelTokens = s.input + s.output;
       return {
-        model: model.replace('claude-', '').replace('gpt-', ''),
+        model: model.replace('claude-', ''),
         tokens: modelTokens,
         cost: s.cost,
         percentage: totalTokens > 0 ? (modelTokens / totalTokens) * 100 : 0,

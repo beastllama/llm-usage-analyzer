@@ -36,11 +36,12 @@ test('plan multipliers match Anthropic\'s published allowances', () => {
   assert.equal(PLANS['Claude Max 20x'].multiplier, 20);
 });
 
-test('o1 variants without a verified price are unpriced rather than given the o1 rate', () => {
-  assert.equal(priceFor('o1-mini-2024-09-12'), null);
-  assert.equal(priceFor('o1-2024-12-17')?.input, 15);
+test('a newer model id that is not in the table is unpriced, not priced like an older model', () => {
+  assert.equal(priceFor('claude-opus-5-6'), null);
+  assert.equal(priceFor('claude-sonnet-5-6'), null);
+  assert.equal(priceFor('claude-opus-5-5-20260315')?.input, 4);
+  assert.equal(priceFor('gpt-4o'), null);
 });
-
 test('Haiku 5.5 requests over 100K prompt tokens use the long-prompt rate', () => {
   assert.equal(priceFor('claude-haiku-5-5-long-prompt')?.input, 0.5);
   assert.equal(priceFor('claude-haiku-5-5-long-prompt')?.output, 2.5);

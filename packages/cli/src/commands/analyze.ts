@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { UsageReport } from '../types.js';
 import { formatTokens } from '../parsers/claude.js';
-import { PLANS, PLAN_KEYS, costByModel } from '../pricing.js';
+import { PLANS, PLAN_KEYS, PRICES_CHECKED, costByModel } from '../pricing.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -77,6 +77,7 @@ export const analyzeCommand = new Command('analyze')
       console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.join(', ')} (left out)`));
     }
 
-    console.log(chalk.gray('\n   Estimate only. Anthropic does not publish exact usage limits per plan.'));
+    console.log(chalk.gray('\n   Price only: a cheaper plan may not give you enough usage.'));
+    console.log(chalk.gray(`   Estimate at list prices checked ${PRICES_CHECKED}. Anthropic does not publish the size of plan limits.`));
     console.log(chalk.gray('   For your real limit use `llm-usage statusline` (Pro and Max).\n'));
   });
