@@ -59,9 +59,10 @@ const PRICES: Record<string, ModelPrice | null> = {
   'claude-sonnet-5': claude(2, 10),
   'claude-sonnet-4-6': claude(3, 15),
   'claude-sonnet-4-5': claude(3, 15),
-  // Haiku 5.5 prompts over 100K tokens cost more ($0.50/$2.50). This table uses the lower rate,
-  // so long-prompt Haiku usage is underestimated.
   'claude-haiku-5-5': { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125, cacheWrite1h: 0.2 },
+  // Haiku 5.5 requests whose prompt is over 100K tokens are billed at this rate for the whole request.
+  // The CLI parser files those requests under this key.
+  'claude-haiku-5-5-long-prompt': { input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625, cacheWrite1h: 1 },
   'claude-haiku-4-5': claude(1, 5),
   // Retired model, last listed price.
   'claude-3-5-haiku': claude(0.8, 4),

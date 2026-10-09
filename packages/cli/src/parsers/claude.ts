@@ -83,6 +83,19 @@ export function parseLocalDate(text: string): Date | null {
   return d;
 }
 
+/** One API response, as read from the transcript. */
+interface Reply {
+  model: string;
+  ts: Date | null;
+  sessionId: string;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cacheWrite1h: number;
+  cacheWriteAll: number;
+}
+
 /**
  * Scan Claude Code transcripts and aggregate usage.
  * One reply = one API response. Claude Code can write several lines for one response,
@@ -131,7 +144,6 @@ export async function scanClaudeUsage(
   };
 
   const dayDetail: Record<string, DayDetail> = {};
-  const seenReplies = new Set<string>();
   const sessionIds = new Set<string>();
   let minTs: Date | null = null;
   let maxTs: Date | null = null;
@@ -146,6 +158,10 @@ export async function scanClaudeUsage(
   progress.projectsFound = new Set(files.map(f => path.dirname(path.relative(projectsDir, f)).split(path.sep)[0])).size;
   onProgress?.(progress);
 
+  // Pass 1: one entry per reply. A reply can appear on several lines, and later lines can
+  // carry a larger output count, so the largest output seen for each reply is kept.
+  const replies = new Map<string, Reply>();
+
   for (const file of files) {
     progress.filesProcessed++;
 
@@ -157,8 +173,9 @@ export async function scanClaudeUsage(
       continue;
     }
 
-    for (const line of content.split('\n')) {
-      const entry = parseJsonlLine(line);
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const entry = parseJsonlLine(lines[i]);
       const msg = entry?.message;
       if (!entry || !msg?.usage) continue;
 
@@ -168,67 +185,81 @@ export async function scanClaudeUsage(
       // With a date window, entries without a timestamp cannot be placed, so they are left out
       if (hasRange && (!ts || (rangeStart && ts < rangeStart) || (rangeEnd && ts >= rangeEnd))) continue;
 
-      // Count each API response once. Use the message id, then the request id.
-      const replyKey = msg.id || entry.requestId || null;
-      if (replyKey) {
-        if (seenReplies.has(replyKey)) {
-          progress.duplicatesSkipped++;
-          continue;
-        }
-        seenReplies.add(replyKey);
+      const output = msg.usage.output_tokens || 0;
+      // Use the message id, then the request id. A line with neither is its own reply.
+      const key = msg.id || entry.requestId || `${file}#${i}`;
+      const existing = replies.get(key);
+      if (existing) {
+        progress.duplicatesSkipped++;
+        existing.output = Math.max(existing.output, output);
+        continue;
       }
 
-      const input = msg.usage.input_tokens || 0;
-      const output = msg.usage.output_tokens || 0;
-      const cacheRead = msg.usage.cache_read_input_tokens || 0;
-      // Writes are split by cache lifetime when the log says so (1-hour writes cost more).
-      // Older logs have no split, so every write is treated as 5-minute.
       const creation = msg.usage.cache_creation;
       const cacheWriteAll = msg.usage.cache_creation_input_tokens || 0;
       const cacheWrite1h = creation?.ephemeral_1h_input_tokens || 0;
-      const cacheWrite = creation
-        ? (creation.ephemeral_5m_input_tokens ?? Math.max(0, cacheWriteAll - cacheWrite1h))
-        : cacheWriteAll;
-      const model = msg.model || 'unknown';
-
-      const tokens = report.usage.tokens;
-      tokens.input += input;
-      tokens.output += output;
-      tokens.cached = (tokens.cached || 0) + cacheRead + cacheWrite + cacheWrite1h;
-
-      const modelTotals = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
-      modelTotals.input += input;
-      modelTotals.output += output;
-      modelTotals.cache_read = (modelTotals.cache_read || 0) + cacheRead;
-      modelTotals.cache_write = (modelTotals.cache_write || 0) + cacheWrite;
-      modelTotals.cache_write_1h = (modelTotals.cache_write_1h || 0) + cacheWrite1h;
-      tokens.by_model[model] = modelTotals;
-
-      report.usage.messages.count++;
-      progress.messagesProcessed++;
-      sessionIds.add(entry.sessionId || file);
-
-      if (ts) {
-        if (!minTs || ts < minTs) minTs = ts;
-        if (!maxTs || ts > maxTs) maxTs = ts;
-
-        const day = localDayKey(ts);
-        const detail = dayDetail[day] || { count: 0, input: 0, output: 0, by_model: {} };
-        detail.count++;
-        detail.input += input;
-        detail.output += output;
-        const dm = detail.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
-        dm.input += input;
-        dm.output += output;
-        dm.cache_read += cacheRead;
-        dm.cache_write += cacheWrite;
-        dm.cache_write_1h += cacheWrite1h;
-        detail.by_model[model] = dm;
-        dayDetail[day] = detail;
-      }
+      replies.set(key, {
+        model: msg.model || 'unknown',
+        ts,
+        sessionId: entry.sessionId || file,
+        input: msg.usage.input_tokens || 0,
+        output,
+        cacheRead: msg.usage.cache_read_input_tokens || 0,
+        // Writes are split by cache lifetime when the log says so (1-hour writes cost more).
+        // Older logs have no split, so every write is treated as 5-minute.
+        cacheWrite: creation
+          ? (creation.ephemeral_5m_input_tokens ?? Math.max(0, cacheWriteAll - cacheWrite1h))
+          : cacheWriteAll,
+        cacheWrite1h,
+        cacheWriteAll,
+      });
     }
 
     onProgress?.(progress);
+  }
+
+  // Pass 2: totals from the replies
+  const tokens = report.usage.tokens;
+  for (const r of replies.values()) {
+    let model = r.model;
+    // Haiku 5.5 bills a whole request at a higher rate when its prompt is over 100K tokens
+    const promptTokens = r.input + r.cacheRead + r.cacheWriteAll;
+    if (model.startsWith('claude-haiku-5-5') && promptTokens > 100_000) model = 'claude-haiku-5-5-long-prompt';
+
+    tokens.input += r.input;
+    tokens.output += r.output;
+    tokens.cached = (tokens.cached || 0) + r.cacheRead + r.cacheWrite + r.cacheWrite1h;
+
+    const modelTotals = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
+    modelTotals.input += r.input;
+    modelTotals.output += r.output;
+    modelTotals.cache_read = (modelTotals.cache_read || 0) + r.cacheRead;
+    modelTotals.cache_write = (modelTotals.cache_write || 0) + r.cacheWrite;
+    modelTotals.cache_write_1h = (modelTotals.cache_write_1h || 0) + r.cacheWrite1h;
+    tokens.by_model[model] = modelTotals;
+
+    report.usage.messages.count++;
+    progress.messagesProcessed++;
+    sessionIds.add(r.sessionId);
+
+    if (r.ts) {
+      if (!minTs || r.ts < minTs) minTs = r.ts;
+      if (!maxTs || r.ts > maxTs) maxTs = r.ts;
+
+      const day = localDayKey(r.ts);
+      const detail = dayDetail[day] || { count: 0, input: 0, output: 0, by_model: {} };
+      detail.count++;
+      detail.input += r.input;
+      detail.output += r.output;
+      const dm = detail.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
+      dm.input += r.input;
+      dm.output += r.output;
+      dm.cache_read += r.cacheRead;
+      dm.cache_write += r.cacheWrite;
+      dm.cache_write_1h += r.cacheWrite1h;
+      detail.by_model[model] = dm;
+      dayDetail[day] = detail;
+    }
   }
 
   report.usage.sessions.count = sessionIds.size;

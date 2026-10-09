@@ -32,5 +32,6 @@
       "contextMenus",
       "notifications"
     ]
-  }
+  },
+  "license": "MIT"
 }

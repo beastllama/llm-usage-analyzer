@@ -14,5 +14,4 @@ Use GitHub's **Report a vulnerability** button on this repository's Security tab
 
 ## Known limits
 
-- The dashboard loads Tailwind and the Inter font from public CDNs.
 - The browser extension reads the Anthropic and OpenAI consoles. It's for API billing, not Pro or Max usage.

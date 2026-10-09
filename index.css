@@ -1,0 +1,11 @@
+/* Inter is bundled with the app, so the page makes no font requests to third parties. */
+@import '@fontsource-variable/inter';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+  background: #0b0c15;
+}

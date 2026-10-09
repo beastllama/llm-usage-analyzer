@@ -132,3 +132,26 @@ test('saving keeps the fuller copy of a day, so a partial day never overwrites a
   const upgraded = mergeForSave({ '2026-10-02': partial }, { '2026-10-02': full });
   assert.equal(upgraded['2026-10-02'].count, 10);
 });
+
+test('a Haiku 5.5 request with a prompt over 100K tokens is filed under the long-prompt rate', async () => {
+  writeTranscript('s1.jsonl', [
+    reply('h1', '2026-10-01T10:00:00.000Z', 'claude-haiku-5-5', { input_tokens: 150_000, output_tokens: 10 }),
+    reply('h2', '2026-10-01T10:01:00.000Z', 'claude-haiku-5-5', { input_tokens: 60_000, cache_read_input_tokens: 50_000, output_tokens: 10 }),
+    reply('h3', '2026-10-01T10:02:00.000Z', 'claude-haiku-5-5', { input_tokens: 5_000, output_tokens: 10 }),
+  ]);
+  const { report } = await scanClaudeUsage({});
+  // h1 (150K) and h2 (110K with cache) are long. h3 is short.
+  assert.equal(report.usage.tokens.by_model['claude-haiku-5-5-long-prompt'].input, 210_000);
+  assert.equal(report.usage.tokens.by_model['claude-haiku-5-5'].input, 5_000);
+});
+
+test('when a reply is logged more than once, the largest output count is kept', async () => {
+  writeTranscript('s1.jsonl', [
+    reply('m9', '2026-10-01T10:00:00.000Z', 'claude-opus-5-5', { input_tokens: 10, output_tokens: 5 }),
+    reply('m9', '2026-10-01T10:00:05.000Z', 'claude-opus-5-5', { input_tokens: 10, output_tokens: 50 }),
+  ]);
+  const { report, progress } = await scanClaudeUsage({});
+  assert.equal(report.usage.messages.count, 1);
+  assert.equal(progress.duplicatesSkipped, 1);
+  assert.equal(report.usage.tokens.output, 50);
+});

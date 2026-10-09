@@ -31,7 +31,8 @@ CI runs the same checks on every pull request.
 | `components/AnalysisDashboard.tsx` | The main screen. One answer first, details behind a click. |
 | `packages/cli/src/parsers/claude.ts` | Reads Claude Code transcripts. Counts each reply once. |
 | `packages/cli/src/limits.ts` | Status-line readings and the downgrade check |
-| `packages/cli/src/pricing.ts` | CLI copy of `services/pricing.ts`. **Keep the two in sync.** |
+| `packages/cli/src/pricing.ts` | CLI copy of `services/pricing.ts`. A test fails if they differ. |
+| `archive/` | Retired code, not built or supported. See `archive/README.md`. |
 
 ## 📐 Rules we keep
 

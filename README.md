@@ -35,6 +35,19 @@ The dashboard shows **one answer first**. Details are one click away.
 
 ---
 
+## 🌐 Hosting the dashboard (optional)
+
+Your data never leaves your computer, so the dashboard can be served from anywhere. It only needs the local server to reach it.
+
+- **Run it locally** (what `npm start` does). Nothing to set up.
+- **GitHub Pages** (free, runs from this repo). The workflow in `.github/workflows/pages.yml` publishes the dashboard after each merge to `main`. One-time setup: Settings → Pages → Source: **GitHub Actions**. Then run:
+  ```bash
+  llm-usage serve --origin https://beastllama.github.io
+  ```
+  Your browser then lets that page read the local server, and nothing else.
+
+---
+
 ## 🎯 Live limits (Pro and Max)
 
 Anthropic does not publish exact limits. Claude Code does show your live 5-hour and weekly percentages, though. This tool can record them.
@@ -73,7 +86,7 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 - **Dashboard analysis runs in your browser.**
 - **Optional AI tip:** off by default. If you turn it on and paste your own Gemini key, only these numbers go to Google: your plan, estimated cost, token totals, and active days. No file text, no messages.
 - **OpenAI import:** your admin key goes only to OpenAI.
-- **Two outside calls:** the page loads Tailwind and the Inter font from CDNs. Those servers see your IP address, as with any website.
+- **Nothing loads from third parties.** Styles and the font are bundled. Outside calls happen only when you ask: the optional AI tip (Google) or the OpenAI import (OpenAI).
 
 ---
 
@@ -86,11 +99,12 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 
 ⚠️ **Limits of the estimate:**
 - **Not exact.** List prices, not your invoice.
-- **Output tokens are a lower bound.** The local logs do not record the final output count.
+- **Output tokens are a lower bound.** For each reply the largest count in the log is used. Some replies only log an early count, so the true output is higher.
 - **Anthropic does not publish a daily cap.** So this tool makes no "you fit in Pro" claim from message counts.
 - **Claude.ai web chats are not in Claude Code logs.** Use the web export in the dashboard for those.
 - **Transcripts are deleted after 30 days** by default. This tool keeps older days it has already seen in `~/.llm-usage/history.json`. Scan regularly to keep history. You can raise the limit with `cleanupPeriodDays` in Claude Code's settings.
 - **Models without a known price are left out**, and the dashboard says which ones.
+- **Haiku 5.5 requests with a prompt over 100K tokens** are priced at the higher rate that applies to the whole request.
 
 ---
 
@@ -128,10 +142,10 @@ Project layout:
 - `App.tsx`, `components/`, `services/`: the web dashboard
 - `services/pricing.ts`: all prices and plan multipliers, in one place
 - `packages/cli/`: the `llm-usage` command
-- `packages/extension/`: a browser extension that collects from the Anthropic and OpenAI consoles (API billing, not Pro or Max)
+- `archive/`: retired code, including a browser extension for API consoles. See `archive/README.md`
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
 ## License
 
-Not chosen yet. Until one is added, all rights are reserved by the maintainer.
+MIT. See [LICENSE](LICENSE).

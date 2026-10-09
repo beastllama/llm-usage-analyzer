@@ -40,3 +40,9 @@ test('o1 variants without a verified price are unpriced rather than given the o1
   assert.equal(priceFor('o1-mini-2024-09-12'), null);
   assert.equal(priceFor('o1-2024-12-17')?.input, 15);
 });
+
+test('Haiku 5.5 requests over 100K prompt tokens use the long-prompt rate', () => {
+  assert.equal(priceFor('claude-haiku-5-5-long-prompt')?.input, 0.5);
+  assert.equal(priceFor('claude-haiku-5-5-long-prompt')?.output, 2.5);
+  assert.equal(priceFor('claude-haiku-5-5')?.input, 0.1);
+});
