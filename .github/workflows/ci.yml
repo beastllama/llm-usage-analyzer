@@ -40,3 +40,31 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  package:
+    name: Package (install the tarball, run it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:app
+      - name: Pack the CLI
+        working-directory: packages/cli
+        run: |
+          npm ci
+          npm run build
+          npm pack --pack-destination "$RUNNER_TEMP"
+      - name: Install the tarball and call it like a user would
+        run: |
+          mkdir "$RUNNER_TEMP/smoke" && cd "$RUNNER_TEMP/smoke"
+          npm init -y > /dev/null
+          npm install "$RUNNER_TEMP"/llm-usage-analyzer-*.tgz
+          CLAUDE_CONFIG_DIR="$RUNNER_TEMP/none" ./node_modules/.bin/llm-usage-analyzer --no-open --port 3555 &
+          sleep 3
+          curl -sf http://localhost:3555/ | grep -q 'llm-usage-server'
+          curl -sI http://localhost:3555/ | grep -qi "content-security-policy: .*connect-src 'self'"
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:3555/api/usage)" = "404"

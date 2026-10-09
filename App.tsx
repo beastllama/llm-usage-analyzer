@@ -4,12 +4,11 @@ import AnalysisDashboard from './components/AnalysisDashboard';
 import HistoryView from './components/HistoryView';
 import { UsageReport, StoredReport } from './types';
 import { MOCK_DATA } from './constants';
-import { Activity, History, ChevronDown, Trash2, X, TrendingUp } from 'lucide-react';
+import { Activity, History, ChevronDown, Trash2, X, TrendingUp, Loader2 } from 'lucide-react';
 import { storageService } from './services/storageService';
+import { LOCAL_SERVER_URL, servedByCli } from './services/localServer';
 
 type ViewMode = 'uploader' | 'dashboard' | 'trends';
-
-const LOCAL_SERVER_URL = 'http://localhost:3456';
 
 /** Catches render errors so one bad file cannot leave a blank page. */
 interface ErrorBoundaryProps {
@@ -55,12 +54,18 @@ const App: React.FC = () => {
   const [viewMode, setViewMode] = useState<ViewMode>('uploader');
   const [isLiveData, setIsLiveData] = useState(false);
   const [liveServerConnected, setLiveServerConnected] = useState(false);
+  // When the CLI serves this page, the data is read straight away: no clicks needed
+  const [readingLocal, setReadingLocal] = useState(servedByCli);
+  const [startupError, setStartupError] = useState<string | null>(null);
 
   // Initialize storage and restore session state on mount
   useEffect(() => {
     storageService.init();
     const reports = storageService.getReports();
     setSavedReports(reports);
+
+    // The CLI-served page loads live data instead (see below)
+    if (servedByCli) return;
 
     // Restore session state (survives browser refresh)
     const savedViewMode = sessionStorage.getItem('viewMode') as ViewMode;
@@ -156,6 +161,29 @@ const App: React.FC = () => {
       // Storage is blocked or full. The report still shows for this visit.
     }
   }, [currentReportId]);
+
+  // Served by the CLI: read the local history on arrival
+  useEffect(() => {
+    if (!servedByCli) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${LOCAL_SERVER_URL}/api/usage`);
+        if (res.status === 404) {
+          throw new Error('No Claude Code history was found on this computer. If you use claude.ai in the browser, export your chats below.');
+        }
+        if (!res.ok) throw new Error('Could not read your Claude Code history.');
+        const report = (await res.json()) as UsageReport;
+        if (!cancelled) handleDataLoaded(report, true);
+      } catch (err) {
+        if (!cancelled) setStartupError(err instanceof Error ? err.message : 'Could not read your Claude Code history.');
+      } finally {
+        if (!cancelled) setReadingLocal(false);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleLoadDemo = () => {
     setData(MOCK_DATA);
@@ -300,8 +328,14 @@ const App: React.FC = () => {
 
       <main className="relative z-10">
         <ErrorBoundary onReset={handleReset}>
-          {viewMode === 'uploader' && (
-            <Uploader onDataLoaded={handleDataLoaded} onLoadDemo={handleLoadDemo} />
+          {viewMode === 'uploader' && readingLocal && (
+            <div role="status" className="max-w-md mx-auto text-center py-24 px-4 space-y-3">
+              <Loader2 className="w-8 h-8 mx-auto text-indigo-300 motion-safe:animate-spin" aria-hidden="true" />
+              <p className="text-slate-300">Reading your Claude Code history…</p>
+            </div>
+          )}
+          {viewMode === 'uploader' && !readingLocal && (
+            <Uploader onDataLoaded={handleDataLoaded} onLoadDemo={handleLoadDemo} initialError={startupError} />
           )}
           {viewMode === 'dashboard' && data && (
             <AnalysisDashboard

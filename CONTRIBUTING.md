@@ -7,8 +7,9 @@ Thanks for helping! This tool answers one question for Claude users: **is my sub
 ```bash
 git clone https://github.com/beastllama/llm-usage-analyzer.git
 cd llm-usage-analyzer
-npm run setup        # installs everything, builds the CLI, links `llm-usage`
-npm start            # dashboard on localhost:5173 + local server on localhost:3456
+npm run setup        # installs everything, bundles the dashboard into the CLI, links the commands
+npm start            # dev dashboard on localhost:5173 + local server on localhost:3456
+npx llm-usage-analyzer --no-open   # (after setup) the bundled version, as users get it
 ```
 
 Needs Node 22.12+.
@@ -31,6 +32,7 @@ CI runs the same checks on every pull request.
 | `components/AnalysisDashboard.tsx` | The main screen. One answer first, details behind a click. |
 | `packages/cli/src/parsers/claude.ts` | Reads Claude Code transcripts. Counts each reply once. |
 | `packages/cli/src/limits.ts` | Status-line readings and the downgrade check |
+| `packages/cli/src/commands/serve.ts` | Local server. Serves the bundled dashboard with its security policy |
 | `packages/cli/src/pricing.ts` | CLI copy of `services/pricing.ts`. A test fails if they differ. |
 | `archive/` | Retired code, not built or supported. See `archive/README.md`. |
 
@@ -38,7 +40,7 @@ CI runs the same checks on every pull request.
 
 - **Never guess.** If a price, limit, or model is unknown, show "unpriced" or "not published." Don't fill the gap.
 - **Plain language.** Short sentences. One primary action per screen.
-- **Private by default.** No network calls unless the user turns them on. Never send file text.
+- **Private by default.** The app makes no network calls and asks for no login or key. Don't add any. The served page's policy (`connect-src 'self'`) would block them anyway.
 - **Cite the source.** New prices or plan facts need a link to the official page in the PR.
 
 ## 🐛 Reporting bugs
@@ -52,6 +54,6 @@ Report security problems privately. See [SECURITY.md](SECURITY.md).
 ## 💡 Good first issues
 
 - Add a test for a formatter in `services/exportService.ts`
-- Improve an error message in `components/Uploader.tsx`
+- Improve an error message in `services/fileImport.ts`
 - Add a model to `services/pricing.ts`, with its source link
 - Make a screen work with the keyboard only, and say what you tested

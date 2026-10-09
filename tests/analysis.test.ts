@@ -4,8 +4,6 @@ import { calculateAnalysis, analyzeUsagePattern, spanDays } from '../services/an
 import { priceFor, tokenCost, PLANS } from '../services/pricing.ts';
 import { getModelDistribution, calculateMonthlyTrends, pickNonOverlapping } from '../services/trendService.ts';
 import { csvCell } from '../services/exportService.ts';
-import { usageUrl } from '../services/openaiService.ts';
-import { aiPayloadPreview } from '../services/geminiService.ts';
 import { MOCK_DATA } from '../constants.ts';
 import type { UsageReport, StoredReport } from '../types.ts';
 
@@ -98,20 +96,6 @@ test('spreadsheet cells are quoted and formula triggers are neutralised', () => 
   assert.equal(csvCell(42), '42');
 });
 
-test('every OpenAI page keeps the same query, and the cursor goes in as `page`', () => {
-  const start = new Date('2026-10-01T00:00:00Z');
-  const end = new Date('2026-10-09T23:59:59Z');
-  const first = new URL(usageUrl(start, end));
-  assert.equal(first.origin + first.pathname, 'https://api.openai.com/v1/organization/usage/completions');
-  assert.equal(first.searchParams.has('page'), false);
-
-  const next = new URL(usageUrl(start, end, 'page_AAAA'));
-  assert.equal(next.origin + next.pathname, 'https://api.openai.com/v1/organization/usage/completions');
-  assert.equal(next.searchParams.get('page'), 'page_AAAA');
-  assert.equal(next.searchParams.get('start_time'), first.searchParams.get('start_time'));
-  assert.equal(next.searchParams.get('group_by'), 'model');
-});
-
 test('a model named __proto__ cannot pollute the distribution', () => {
   const stored: StoredReport[] = [{
     id: 'x', savedAt: '2026-10-01T00:00:00.000Z', name: 'x',
@@ -144,13 +128,6 @@ test('a report spanning two months is split between them, not dumped into the fi
   assert.deepEqual(months.map(m => m.period), ['2026-09', '2026-10']);
   assert.ok(Math.abs(months[0].totalCost - (100 / 300) * (300 * 4 / 1e6)) < 1e-12);
   assert.equal(months[1].activeDays, 2);
-});
-
-test('the AI preview lists only numbers and plan names, never file text', () => {
-  const cmp = calculateAnalysis(MOCK_DATA, 'Claude Pro');
-  const lines = aiPayloadPreview(MOCK_DATA, cmp, analyzeUsagePattern(MOCK_DATA));
-  assert.equal(lines.length, 4);
-  assert.ok(lines[0].startsWith('Plan you chose: Claude Pro'));
 });
 
 test('span counts calendar days, not hours: 20:00 on day 1 to 08:00 on day 9 is 9 days', () => {
@@ -187,6 +164,3 @@ test('a report saved twice (same days) is counted once in the trends', () => {
   assert.equal(getModelDistribution([older, newer])[0].tokens, 900);
 });
 
-test('the OpenAI cursor, not a URL, is what pages through the results', () => {
-  assert.match(usageUrl(new Date('2026-10-01T00:00:00Z'), new Date('2026-10-09T00:00:00Z'), 'page_xyz'), /[?&]page=page_xyz/);
-});

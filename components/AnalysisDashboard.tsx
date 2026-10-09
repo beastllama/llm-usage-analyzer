@@ -1,12 +1,16 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell
 } from 'recharts';
-import { Download, FileText, FileSpreadsheet, Copy, Check, Scale, MoreHorizontal, ChevronDown, RefreshCw, Sparkles, Eye, EyeOff } from 'lucide-react';
+import {
+  Download, FileText, FileSpreadsheet, Copy, Scale, MoreHorizontal, ChevronDown,
+  RefreshCw, Sparkles, MessageCircle, Share2, Check,
+} from 'lucide-react';
 import { UsageReport } from '../types';
 import { calculateAnalysis, analyzeUsagePattern, formatTokenNumber, formatUsd } from '../services/analysisService';
-import { aiPayloadPreview, getGeminiRecommendation, AiResult } from '../services/geminiService';
+import { buildAiQuestion, buildShareLine, copyText } from '../services/shareService';
+import { ESTIMATED_MODEL } from '../services/fileImport';
 import { PLANS, PLAN_KEYS, PlanKey, toPlanKey } from '../services/pricing';
 import PlanComparison from './PlanComparison';
 import PlanFitAnalyzer from './PlanFitAnalyzer';
@@ -36,14 +40,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   const [panel, setPanel] = useState<Panel>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-
-  // AI tip: off until the user asks. The key lives in memory only, for this page.
-  const [aiOpen, setAiOpen] = useState(false);
-  const [aiKey, setAiKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
-  const [aiState, setAiState] = useState<{ status: 'idle' | 'loading' | 'done' | 'error'; text?: string; error?: string }>({ status: 'idle' });
 
   const cmp = useMemo(() => calculateAnalysis(data, selectedPlan), [data, selectedPlan]);
   const pattern = useMemo(() => analyzeUsagePattern(data), [data]);
@@ -58,14 +56,6 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
     }
   }, [selectedPlan]);
 
-  // A different report or plan makes the old AI answer stale
-  // Each request gets a number. A reply that arrives after the report or plan changed is ignored.
-  const requestRef = useRef(0);
-  useEffect(() => {
-    requestRef.current++;
-    setAiState({ status: 'idle' });
-  }, [data, selectedPlan]);
-
   // Escape closes open menus
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -77,6 +67,13 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // A short confirmation that clears itself
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 3000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   const handleRefresh = async () => {
     if (!onLiveRefresh) return;
@@ -92,32 +89,26 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
     if (format === 'pdf') exportToPDF(data);
   };
 
-  const handleCopy = async () => {
-    const success = await copyToClipboard(data);
+  const copyAndTell = async (text: string, done: string) => {
     setShowMore(false);
-    setCopied(success);
-    if (success) setTimeout(() => setCopied(false), 2000);
+    setNotice((await copyText(text)) ? done : 'Could not copy. Your browser blocked it.');
   };
 
-  const askAi = async () => {
-    const id = ++requestRef.current;
-    setAiState({ status: 'loading' });
-    const result: AiResult = await getGeminiRecommendation(aiKey, data, cmp, pattern);
-    if (id !== requestRef.current) return;
-    if ('error' in result) {
-      setAiState({ status: 'error', error: result.error });
-    } else {
-      setAiState({ status: 'done', text: result.text });
-    }
+  const handleCopySummary = async () => {
+    setShowMore(false);
+    setNotice((await copyToClipboard(data)) ? 'Summary copied.' : 'Could not copy. Your browser blocked it.');
   };
 
   // The verdict only makes sense for Claude usage with at least one priced model
   const comparable = data.provider === 'anthropic' && cmp.canJudge && totalTokens > 0;
+  const isWebExport = Object.keys(data.usage.tokens.by_model).includes(ESTIMATED_MODEL);
   const notComparableReason = totalTokens === 0
     ? 'No usage found in this period.'
-    : data.provider !== 'anthropic'
-      ? 'This report is from OpenAI. The plan comparison covers Claude plans only.'
-      : 'None of the models in this file have a known price, so cost cannot be compared.';
+    : isWebExport
+      ? "claude.ai doesn't record which model answered, so a cost can't be worked out. Here is your activity instead. For your real limit, open claude.ai, then Settings → Usage."
+      : data.provider !== 'anthropic'
+        ? 'This report is not from Claude. The plan comparison covers Claude plans only.'
+        : 'None of the models in this file have a known price, so cost cannot be compared.';
 
   const headline = cmp.verdict === 'keep'
     ? `Your ${selectedPlan} plan costs less than pay-as-you-go.`
@@ -187,18 +178,23 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
             {showMore && (
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setShowMore(false)} aria-hidden="true" />
-                <div role="menu" className="absolute right-0 mt-2 w-56 bg-slate-900 border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
+                <div role="menu" className="absolute right-0 mt-2 w-64 bg-slate-900 border border-white/10 rounded-xl shadow-xl z-50 overflow-hidden">
                   {comparable && (
                     <MenuItem icon={<Scale className="w-4 h-4" />} onClick={() => { setPanel('compare'); setShowMore(false); }}>Compare plans</MenuItem>
                   )}
                   <MenuItem icon={<Sparkles className="w-4 h-4" />} onClick={() => { setPanel('pattern'); setShowMore(false); }}>Usage pattern</MenuItem>
+                  {comparable && (
+                    <>
+                      <div className="border-t border-white/5" />
+                      <MenuItem icon={<MessageCircle className="w-4 h-4" />} onClick={() => copyAndTell(buildAiQuestion(data, cmp, pattern), 'Question copied. Paste it into any AI.')}>Copy a question for an AI</MenuItem>
+                      <MenuItem icon={<Share2 className="w-4 h-4" />} onClick={() => copyAndTell(buildShareLine(cmp), 'Share line copied.')}>Copy a line to share</MenuItem>
+                    </>
+                  )}
                   <div className="border-t border-white/5" />
                   <MenuItem icon={<FileText className="w-4 h-4" />} onClick={() => handleExport('json')}>Export JSON</MenuItem>
                   <MenuItem icon={<FileSpreadsheet className="w-4 h-4" />} onClick={() => handleExport('csv')}>Export CSV</MenuItem>
                   <MenuItem icon={<Download className="w-4 h-4" />} onClick={() => handleExport('pdf')}>Print / save PDF</MenuItem>
-                  <MenuItem icon={copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />} onClick={handleCopy}>
-                    {copied ? 'Copied' : 'Copy summary'}
-                  </MenuItem>
+                  <MenuItem icon={<Copy className="w-4 h-4" />} onClick={handleCopySummary}>Copy summary</MenuItem>
                 </div>
               </>
             )}
@@ -209,6 +205,14 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
           </button>
         </div>
       </header>
+
+      <div role="status" aria-live="polite" className="min-h-0">
+        {notice && (
+          <p className="inline-flex items-center gap-2 text-sm text-green-300 bg-green-500/10 border border-green-500/20 rounded-lg px-3 py-2">
+            <Check className="w-4 h-4" aria-hidden="true" /> {notice}
+          </p>
+        )}
+      </div>
 
       {/* The answer: one card, one sentence, plain numbers */}
       <section aria-labelledby="answer-title" className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 md:p-8 space-y-6">
@@ -272,7 +276,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
         </div>
         )}
 
-        {cmp.unpricedModels.length > 0 && (
+        {cmp.unpricedModels.length > 0 && !isWebExport && (
           <p className="text-xs text-amber-300">
             Not counted, because no price is known: {cmp.unpricedModels.join(', ')}.
           </p>
@@ -366,76 +370,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
         </section>
       )}
 
-      {/* Optional AI tip: off by default, and only for Claude reports that can be compared */}
-      {comparable && (
-      <section aria-labelledby="ai-title" className="bg-slate-800/40 border border-white/5 rounded-2xl p-6">
-        <div className="flex items-center justify-between gap-4 flex-wrap">
-          <div>
-            <h3 id="ai-title" className="text-lg font-semibold text-white">Optional AI tip</h3>
-            <p className="text-sm text-slate-400">Off unless you turn it on. Uses your own Gemini key.</p>
-          </div>
-          <button
-            onClick={() => setAiOpen(!aiOpen)}
-            aria-expanded={aiOpen}
-            className="text-sm px-4 py-2 rounded-lg border border-slate-600 text-slate-200 hover:bg-slate-800"
-          >
-            {aiOpen ? 'Hide' : 'Turn on'}
-          </button>
-        </div>
-
-        {aiOpen && (
-          <div className="mt-5 space-y-4">
-            <div className="text-sm text-slate-300">
-              <p className="font-medium text-white mb-1">This will be sent to Google:</p>
-              <ul className="list-disc list-inside text-slate-400">
-                {aiPayloadPreview(data, cmp, pattern).map(line => <li key={line}>{line}</li>)}
-              </ul>
-              <p className="text-slate-500 mt-2">No file text, no names, no messages.</p>
-            </div>
-
-            <div>
-              <label htmlFor="gemini-key" className="block text-sm text-slate-300 mb-1">Your Gemini API key</label>
-              <div className="flex gap-2">
-                <input
-                  id="gemini-key"
-                  type={showKey ? 'text' : 'password'}
-                  value={aiKey}
-                  onChange={(e) => setAiKey(e.target.value)}
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="flex-1 bg-slate-900 border border-slate-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowKey(!showKey)}
-                  aria-label={showKey ? 'Hide key' : 'Show key'}
-                  className="px-3 rounded-lg border border-slate-600 text-slate-300 hover:bg-slate-800"
-                >
-                  {showKey ? <EyeOff className="w-4 h-4" aria-hidden="true" /> : <Eye className="w-4 h-4" aria-hidden="true" />}
-                </button>
-              </div>
-              <p className="text-xs text-slate-500 mt-1">Kept in this page only. It is not saved.</p>
-            </div>
-
-            <button
-              onClick={askAi}
-              disabled={!aiKey.trim() || aiState.status === 'loading'}
-              className="text-sm px-4 py-2 rounded-lg bg-indigo-500 hover:bg-indigo-400 text-white font-medium disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              {aiState.status === 'loading' ? 'Asking' : 'Get tip'}
-            </button>
-
-            <div role="status" aria-live="polite" className="text-sm text-slate-200">
-              {aiState.status === 'done' && <p className="whitespace-pre-line">{aiState.text}</p>}
-              {aiState.status === 'error' && <p className="text-amber-300">{aiState.error}</p>}
-            </div>
-          </div>
-        )}
-      </section>
-      )}
-
       <p className="text-xs text-slate-500">
-        Everything here runs in your browser, except the optional AI tip.
+        Everything here runs on your computer. Nothing is sent anywhere.
       </p>
     </div>
   );

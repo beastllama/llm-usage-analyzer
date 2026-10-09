@@ -5,46 +5,39 @@ This tool compares what you pay with what the same usage would cost on pay-as-yo
 
 ---
 
-## ⚡ Fastest way (2 minutes, no browser)
-
-1. Install once (needs Node 22.12+ and Claude Code):
-   ```bash
-   git clone https://github.com/beastllama/llm-usage-analyzer.git
-   cd llm-usage-analyzer
-   npm run setup
-   ```
-2. Run:
-   ```bash
-   llm-usage scan       # reads your Claude Code history
-   llm-usage analyze    # compares pay-as-you-go with each plan
-   ```
-
-That's it. Done.
-
----
-
-## 🖥️ Dashboard (optional)
+## ⚡ Fastest way (one command)
 
 ```bash
-npm start              # starts the dashboard at http://localhost:5173 and the local server
+npx llm-usage-analyzer
 ```
 
-Then click **Analyze My Usage** (if the local server is running) or drop in a `usage_report.json`.
+Your browser opens with the answer. Needs [Node 22.12+](https://nodejs.org) and Claude Code history on the same computer.
+No login. No API key. Nothing to install first.
 
-The dashboard shows **one answer first**. Details are one click away.
+**Use claude.ai in the browser, not Claude Code?** Run the same command, choose *I use claude.ai in my browser*, and drop in your chat export. Steps are on the page.
+
+**Just curious?** Open the demo: <https://beastllama.github.io/llm-usage-analyzer/> (after Pages is switched on, see below).
 
 ---
 
-## 🌐 Hosting the dashboard (optional)
+## 🖥️ In the terminal instead
 
-Your data never leaves your computer, so the dashboard can be served from anywhere. It only needs the local server to reach it.
+```bash
+npm install -g llm-usage-analyzer      # once
 
-- **Run it locally** (what `npm start` does). Nothing to set up.
-- **GitHub Pages** (free, runs from this repo). The workflow in `.github/workflows/pages.yml` publishes the dashboard after each merge to `main`. One-time setup: Settings → Pages → Source: **GitHub Actions**. Then run:
-  ```bash
-  llm-usage serve --origin https://beastllama.github.io
-  ```
-  Your browser then lets that page read the local server, and nothing else.
+llm-usage scan                         # reads your Claude Code history, writes usage_report.json
+llm-usage analyze                      # compares pay-as-you-go with each plan
+```
+
+---
+
+## 🌐 Hosted demo (optional)
+
+The page can also be served from GitHub Pages. It is a demo and a landing page: your data is never uploaded there.
+
+- One-time setup: Settings → Pages → Source: **GitHub Actions**. `.github/workflows/pages.yml` then publishes it after each merge to `main`.
+- To use your own history from the hosted page, run `npx llm-usage-analyzer serve --origin https://beastllama.github.io` and keep it running. The browser then lets that page read your local server, and nothing else.
+- Simpler: use the `npx llm-usage-analyzer` page. It is served from your own computer and the browser blocks it from sending data anywhere else.
 
 ---
 
@@ -52,14 +45,15 @@ Your data never leaves your computer, so the dashboard can be served from anywhe
 
 Anthropic does not publish exact limits. Claude Code does show your live 5-hour and weekly percentages, though. This tool can record them.
 
-1. Add this to `~/.claude/settings.json`:
+1. Install it once, so the status line starts fast: `npm install -g llm-usage-analyzer`
+2. Add this to `~/.claude/settings.json`:
    ```json
    {
      "statusLine": { "type": "command", "command": "llm-usage statusline" }
    }
    ```
-2. Use Claude Code for a few days.
-3. Check whether a lower plan would have fit:
+3. Use Claude Code for a few days.
+4. Check whether a lower plan would have fit:
    ```bash
    llm-usage limits --plan max20x
    ```
@@ -75,18 +69,19 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 | `llm-usage analyze` | Pay-as-you-go estimate vs Pro, Max 5x, Max 20x |
 | `llm-usage statusline` | Claude Code status line. Shows live % and saves it |
 | `llm-usage limits --plan pro` | Downgrade check from your saved readings |
-| `llm-usage serve` | Local server the dashboard reads from (this computer only) |
+| `llm-usage-analyzer` | Opens the dashboard on your own history (same as `npx llm-usage-analyzer`) |
+| `llm-usage serve` | Local server only, no browser. For the dev dashboard or a hosted copy |
 
 ---
 
 ## 🔒 Privacy
 
+- **No login. No API keys. No accounts.** The tool never asks for one and never reads Claude's login.
 - **Your Claude data stays on your computer.** The CLI reads `~/.claude/projects/` and never uploads it.
-- **The local server listens only on 127.0.0.1.** Only the dashboard's own ports (5173 and 4173) and addresses you add with `--origin` can read it. Other pages are refused.
-- **Dashboard analysis runs in your browser.**
-- **Optional AI tip:** off by default. If you turn it on and paste your own Gemini key, only these numbers go to Google: your plan, estimated cost, token totals, and active days. No file text, no messages.
-- **OpenAI import:** your admin key goes only to OpenAI.
-- **Nothing loads from third parties.** Styles and the font are bundled. Outside calls happen only when you ask: the optional AI tip (Google) or the OpenAI import (OpenAI).
+- **The browser enforces it.** The page the CLI serves carries a Content-Security-Policy with `connect-src 'self'`. Even a bug or a bad dependency could not send your data to another address, because the browser would block it.
+- **The local server listens only on 127.0.0.1.** It checks the Host header, and it hands data only to its own page and to the dashboard dev ports (5173, 4173) or addresses you add with `--origin`.
+- **Nothing loads from third parties.** Styles and the font are bundled.
+- **Share only what you choose.** *More → Copy a question for an AI* copies numbers and plan names. You decide where to paste them.
 
 ---
 
@@ -120,9 +115,9 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 
 ## 🛠️ If something's off
 
-- **"Claude Code data not found"**: use Claude Code once, or set `CLAUDE_CONFIG_DIR`.
-- **"Port 3456 is already in use"**: stop the other program, or run `llm-usage serve --port 3457`.
-- **Dashboard says "Disconnected"**: keep `llm-usage serve` running in a terminal.
+- **"No Claude Code history found"**: use Claude Code once, or set `CLAUDE_CONFIG_DIR`. Claude.ai users: use the chat export.
+- **Port busy**: the command moves to the next free port by itself. With `--port`, pick another.
+- **The page says "Disconnected"**: the command stopped. Run it again.
 - **"Nothing to compare yet"**: that report has no priced Claude usage. Check the file and dates.
 
 ---
@@ -130,19 +125,22 @@ Anthropic does not publish exact limits. Claude Code does show your live 5-hour 
 ## 🧑‍💻 For developers
 
 ```bash
-npm run typecheck     # web app
-npm test              # web app tests
-npm run build         # production build
+git clone https://github.com/beastllama/llm-usage-analyzer.git
+cd llm-usage-analyzer
+npm run setup          # installs, bundles the dashboard into the CLI, links the commands
+npm start              # dev dashboard on :5173 + local server on :3456
+
+npm run typecheck && npm test && npm run build         # web app
 
 cd packages/cli
-npm run typecheck && npm test && npm run build
+npm run typecheck && npm test && npm run build         # CLI
 ```
 
 Project layout:
 - `App.tsx`, `components/`, `services/`: the web dashboard
 - `services/pricing.ts`: all prices and plan multipliers, in one place
-- `packages/cli/`: the `llm-usage` command
-- `archive/`: retired code, including a browser extension for API consoles. See `archive/README.md`
+- `packages/cli/`: the `llm-usage-analyzer` command. It bundles the built dashboard in `packages/cli/web` (made by `npm run build:app`)
+- `archive/`: retired code (browser extension, key-based imports). See `archive/README.md`
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

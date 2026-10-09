@@ -17,3 +17,16 @@ Code kept for reference. It is not part of the product, is not built in CI, and 
 - The popup loads in Chromium with no errors. The content scripts were not tested, because they need a logged-in console.
 
 **To revive it**, move it back to `packages/extension`, fix the scrapers against a real console page, and add fixtures.
+
+## key-based-imports/ (retired)
+
+An OpenAI usage import and a Gemini "tip" feature. Both asked the user to paste an API key into the page.
+
+**Why they were retired**
+
+- The product is simple and key-free: one command, no login.
+- OpenAI's usage data needs an organization **admin** key. A login-based route is not available for this.
+- Gemini's sign-in route would need its own Google Cloud project and consent screen. Not worth it for a tip.
+- Anthropic does not allow Claude Free/Pro/Max sign-in tokens in other tools, so there is no sign-in route for Claude either.
+
+**To revive them**, move the files back into `services/` and `tests/`, add `@google/genai` for the Gemini one, and re-add the UI. Note the web page's policy `connect-src 'self'` (CLI-served mode) would block them.
