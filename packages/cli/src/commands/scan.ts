@@ -12,13 +12,16 @@ import {
 import { buildReport } from '../report.js';
 import { historyFile } from '../history.js';
 import { costByModel } from '../pricing.js';
+import { estimateQuality } from '../estimate.js';
+import { insideGitRepo, plain, writePrivateFile } from '../fsafe.js';
+import { wholeNumber } from '../args.js';
 import type { ScanOptions } from '../types.js';
 
 const money = (n: number) => (n > 0 && n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`);
 
 export const scanCommand = new Command('scan')
   .description('Scan Claude Code local data and write usage_report.json')
-  .option('-d, --days <number>', 'Only include the last N days', parseInt)
+  .option('-d, --days <number>', 'Only include the last N days', wholeNumber)
   .option('--start-date <date>', 'Start date (YYYY-MM-DD)')
   .option('--end-date <date>', 'End date (YYYY-MM-DD, included)')
   .option('-o, --output <file>', 'Output file path (default: usage_report.json)')
@@ -46,7 +49,10 @@ export const scanCommand = new Command('scan')
     }
 
     if (options.json) {
-      const { report } = await buildReport({ ...options, save: options.save !== false });
+      const { report, historyWarning, historySaveError } = await buildReport({ ...options, save: options.save !== false });
+      // The report goes to stdout. Anything else goes to stderr, so a pipe gets clean JSON.
+      if (historyWarning) console.error(plain(historyWarning));
+      if (historySaveError) console.error(`Could not save your history (${plain(historySaveError)}). This scan still worked.`);
       console.log(JSON.stringify(report, null, 2));
       return;
     }
@@ -60,7 +66,7 @@ export const scanCommand = new Command('scan')
     console.log('');
 
     const spinner = ora('Reading transcripts...').start();
-    const { report, progress, historyDaysAdded } = await buildReport(
+    const { report, progress, historyDaysAdded, historySaveError, historyWarning } = await buildReport(
       { ...options, save: options.save !== false },
       (p) => {
         spinner.text = `Reading... ${p.filesProcessed} files, ${p.messagesProcessed} replies`;
@@ -68,9 +74,16 @@ export const scanCommand = new Command('scan')
     );
     spinner.stop();
 
+    if (historyWarning) {
+      console.log(chalk.yellow(`⚠️  ${plain(historyWarning)}`));
+    }
+    if (historySaveError) {
+      console.log(chalk.yellow(`⚠️  Could not save your history (${plain(historySaveError)}). This scan still worked. Use --no-save to hide this.`));
+    }
     if (options.verbose && progress.errors.length > 0) {
       console.log(chalk.yellow('⚠️  Some files were skipped:'));
-      progress.errors.slice(0, 5).forEach((err) => console.log(chalk.gray(`   ${err}`)));
+      // File and folder names come from the disk, so they are cleaned before they reach the terminal
+      progress.errors.slice(0, 5).forEach((err) => console.log(chalk.gray(`   ${plain(err).slice(0, 300)}`)));
       if (progress.errors.length > 5) console.log(chalk.gray(`   …and ${progress.errors.length - 5} more`));
       console.log('');
     }
@@ -83,17 +96,21 @@ export const scanCommand = new Command('scan')
 
     const totalTokens = report.usage.tokens.input + report.usage.tokens.output;
     const { cost, unpricedModels } = costByModel(report.usage.tokens.by_model);
+    const quality = estimateQuality(report);
     const days = report.usage.messages.by_day.length;
+    const costText = quality.pricedTokens === 0 ? 'not known (no model has a known price)'
+      : quality.lowerBound ? `at least ${money(cost)}` : money(cost);
 
     console.log(chalk.green('✅ Scan complete\n'));
     console.log(`   ${chalk.white('Replies:')}       ${report.usage.messages.count}  ${chalk.gray(`(${days} active days)`)}`);
     console.log(`   ${chalk.white('Input:')}         ${chalk.cyan(formatTokens(report.usage.tokens.input))}`);
-    console.log(`   ${chalk.white('Output:')}        ${chalk.cyan(formatTokens(report.usage.tokens.output))}  ${chalk.gray('(lower bound, see note)')}`);
+    const outputNote = quality.unfinishedReplies > 0 ? chalk.gray('  (a minimum: some replies were logged before they finished)') : '';
+    console.log(`   ${chalk.white('Output:')}        ${chalk.cyan(formatTokens(report.usage.tokens.output))}${outputNote}`);
     console.log(`   ${chalk.white('Total:')}         ${chalk.cyan(formatTokens(totalTokens))}`);
     if (report.usage.tokens.cached) {
       console.log(`   ${chalk.white('Cache:')}         ${chalk.gray(formatTokens(report.usage.tokens.cached))}`);
     }
-    console.log(`   ${chalk.white('Pay-as-you-go:')} ${chalk.cyan(money(cost))} ${chalk.gray('at list prices, for this period')}`);
+    console.log(`   ${chalk.white('Pay-as-you-go:')} ${chalk.cyan(costText)} ${chalk.gray('at list prices, for this period')}`);
     console.log(`   ${chalk.white('Period:')}        ${new Date(report.period.start).toLocaleDateString()} to ${new Date(report.period.end).toLocaleDateString()}`);
 
     if (historyDaysAdded > 0) {
@@ -103,8 +120,13 @@ export const scanCommand = new Command('scan')
     if (progress.duplicatesSkipped > 0) {
       console.log(chalk.gray(`\n   Counted ${progress.messagesProcessed} replies. Skipped ${progress.duplicatesSkipped} repeated log lines.`));
     }
+    if (quality.unfinishedReplies > 0) {
+      const percent = Math.round(quality.unfinishedShare * 100);
+      console.log(chalk.yellow(`\n   ${quality.unfinishedReplies} repl${quality.unfinishedReplies === 1 ? 'y was' : 'ies were'} logged before finishing (${percent}%). Their output is undercounted.`));
+      if (quality.lowerBound) console.log(chalk.yellow('   So the cost above is a minimum. The real cost is higher.'));
+    }
     if (unpricedModels.length > 0) {
-      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.join(', ')} (left out of the cost)`));
+      console.log(chalk.yellow(`\n   No known price for: ${unpricedModels.map((m) => plain(m).slice(0, 80)).join(', ')} (left out of the cost)`));
     }
 
     const outputPath = path.resolve(options.output || 'usage_report.json');
@@ -118,15 +140,19 @@ export const scanCommand = new Command('scan')
       // File does not exist yet, which is fine
     }
 
+    // The report is personal. Say so before it is written into a folder that is under git.
+    if (insideGitRepo(path.dirname(outputPath))) {
+      console.log(chalk.yellow('\n   The report is about to be written into a git repository. It is personal, so do not commit it.'));
+    }
+
     // Personal data, so only the owner can read it
-    fs.writeFileSync(outputPath, JSON.stringify(report, null, 2), { mode: 0o600 });
-    fs.chmodSync(outputPath, 0o600);
+    writePrivateFile(outputPath, JSON.stringify(report, null, 2));
 
     console.log('');
     console.log(chalk.gray('   ' + '─'.repeat(40)));
-    console.log(chalk.green(`   📄 Saved: ${outputPath}`));
+    console.log(chalk.green(`   📄 Saved: ${plain(outputPath)}`));
     if (options.save !== false) {
       console.log(chalk.gray(`   🗂  History: ${historyFile()}`));
     }
-    console.log(chalk.gray('   Open the dashboard and drop this file in, or run `llm-usage analyze`.\n'));
+    console.log(chalk.gray('   Open the dashboard and drop this file in, or run `llm-usage-analyzer analyze`.\n'));
   });

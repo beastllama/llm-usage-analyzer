@@ -32,6 +32,8 @@ export interface UsageReport {
     messages: {
       count: number;
       by_day: DayUsage[];
+      /** Replies whose log never recorded how they ended, so their output count may be cut short. */
+      unfinished?: number;
     };
     sessions: {
       count: number;
@@ -45,10 +47,14 @@ export interface ClaudeMessage {
   sessionId?: string;
   requestId?: string;
   timestamp?: string;
+  /** Claude Code marks a placeholder row for an API error. It is not a billed reply. */
+  isApiErrorMessage?: boolean;
   message?: {
     id?: string;
     model?: string;
     role?: string;
+    /** Null while a reply is still streaming. Set when the reply has ended. */
+    stop_reason?: string | null;
     usage?: {
       input_tokens?: number;
       output_tokens?: number;

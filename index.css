@@ -21,7 +21,48 @@
   }
 }
 
+/* Makes Inter the default font for everything, including buttons and chart labels */
+@theme {
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
+}
+
+/* The page is dark only, so scroll bars and form controls should be too. */
+html {
+  color-scheme: dark;
+  /* The top bar sticks to the top, so a focused or linked item must not end up behind it */
+  scroll-padding-top: 5rem;
+}
+
 body {
-  font-family: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, sans-serif;
   background: #0b0c15;
+}
+
+/* A long unbroken name (a model id, a file name) wraps instead of pushing the page sideways on a phone */
+main {
+  overflow-wrap: anywhere;
+}
+
+/*
+  The page is dark, so printing it as it is gives white text on white paper. When someone prints the page itself
+  (the "Print or save as PDF" item opens a proper print page), show dark text on white and hide the controls.
+*/
+@media print {
+  html,
+  body {
+    background: #fff !important;
+  }
+  body * {
+    color: #111 !important;
+    background: transparent !important;
+    box-shadow: none !important;
+  }
+  .recharts-text {
+    fill: #111 !important;
+  }
+  nav,
+  button,
+  [role='status'],
+  .fixed {
+    display: none !important;
+  }
 }

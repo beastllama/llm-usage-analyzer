@@ -2,20 +2,25 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { createServer, IncomingMessage, Server, ServerResponse } from 'http';
 import { spawn } from 'child_process';
+import { pipeline } from 'stream';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { claudeDataExists, getClaudeDataPath } from '../parsers/claude.js';
 import { buildReport } from '../report.js';
+import type { UsageReport } from '../types.js';
+import { wholeNumber } from '../args.js';
 
 export const DEFAULT_PORT = 3456;
 // How many ports above the default to try when it is busy and the user did not pick one
 const PORT_TRIES = 20;
 // Listens on loopback only, so other computers on the network cannot reach it
 const BIND_HOST = '127.0.0.1';
+// A scan result is reused for this long, so a burst of requests costs one scan
+const SCAN_CACHE_MS = 2000;
 
 // Pages allowed to read the data from another address: only the dashboard's own dev and preview ports.
-// Any other local page is refused. Add a dashboard elsewhere with --origin.
+// Any other page is refused. Add a self-hosted dashboard address with --origin.
 export const DEFAULT_ORIGINS = [
   'http://localhost:5173',
   'http://localhost:4173',
@@ -25,7 +30,10 @@ export const DEFAULT_ORIGINS = [
 
 /**
  * Rules the browser enforces on the page this server hands out.
- * `connect-src 'self'` is the important one: the page cannot send your data to any other address.
+ * `connect-src 'self'` stops the page's own requests (fetch, XHR, WebSocket) from reaching any other address,
+ * and `script-src 'self'` stops injected scripts. This is a second line of defence, not a guarantee:
+ * a CSP cannot stop every way a script could send data out (for example by navigating the tab).
+ * The first line is that the page carries no code that sends data anywhere.
  */
 export const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
@@ -34,6 +42,7 @@ export const CONTENT_SECURITY_POLICY = [
   "img-src 'self' data:",
   "font-src 'self'",
   "connect-src 'self'",
+  "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -116,8 +125,10 @@ export interface StartOptions {
   /** Port to use. Leave out to use 3456, moving up if it is busy. Use 0 for any free port. */
   port?: number;
   days?: number;
-  /** Extra dashboard addresses allowed to read data (when the page is hosted somewhere else). */
+  /** Extra dashboard addresses allowed to read data (advanced: a dashboard you host yourself). */
   origins?: string[];
+  /** Also let the dashboard's own dev ports (5173, 4173) read the data. Default true. The one-command launch turns it off. */
+  devOrigins?: boolean;
   /** Folder with the built dashboard. null = serve only the data. */
   webDir?: string | null;
   quiet?: boolean;
@@ -132,7 +143,8 @@ export interface RunningServer {
 
 function listen(server: Server, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
-    const onError = (err: Error) => reject(err);
+    // A failed attempt leaves its 'listening' callback behind. Drop it so retries do not pile up listeners.
+    const onError = (err: Error) => { server.removeAllListeners('listening'); reject(err); };
     server.once('error', onError);
     server.listen(port, BIND_HOST, () => {
       server.off('error', onError);
@@ -143,12 +155,28 @@ function listen(server: Server, port: number): Promise<number> {
 }
 
 export async function startServer(options: StartOptions = {}): Promise<RunningServer> {
-  const allowlist = [...DEFAULT_ORIGINS, ...(options.origins ?? [])];
+  const allowlist = [...(options.devOrigins === false ? [] : DEFAULT_ORIGINS), ...(options.origins ?? [])];
   const webDir = options.webDir === undefined ? findWebDir() : options.webDir;
   const log = (line: string) => { if (!options.quiet) console.log(line); };
   let actualPort = options.port ?? DEFAULT_PORT;
 
-  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+  // One scan at a time, and a fresh answer is reused for a moment. Many requests cannot pile up scans.
+  let scanInFlight: Promise<UsageReport> | null = null;
+  let lastScan: { at: number; report: UsageReport } | null = null;
+  const currentReport = (): Promise<UsageReport> => {
+    if (lastScan && Date.now() - lastScan.at < SCAN_CACHE_MS) return Promise.resolve(lastScan.report);
+    if (!scanInFlight) {
+      scanInFlight = buildReport({ days: options.days, save: false })
+        .then(({ report }) => {
+          lastScan = { at: Date.now(), report };
+          return report;
+        })
+        .finally(() => { scanInFlight = null; });
+    }
+    return scanInFlight;
+  };
+
+  const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const url = req.url?.split('?')[0] ?? '/';
 
     const json = (status: number, body: unknown) => {
@@ -158,6 +186,11 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
       res.end(JSON.stringify(body));
     };
 
+    // On every answer, including a refusal
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+
     // Block requests whose Host header is not this server (DNS rebinding)
     if (!isAllowedHost(req.headers.host, actualPort)) {
       json(403, { error: 'Forbidden host' });
@@ -165,6 +198,14 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     }
 
     const origin = allowedOrigin(req.headers.origin, allowlist);
+
+    // A request from another website is not wanted here, unless it comes from a dashboard on the allowlist
+    // (a dev page on 127.0.0.1 is "cross-site" to localhost, and so is a dashboard you host yourself)
+    if (url.startsWith('/api/') && req.headers['sec-fetch-site'] === 'cross-site' && !origin) {
+      json(403, { error: 'Forbidden' });
+      return;
+    }
+
     if (origin) {
       res.setHeader('Access-Control-Allow-Origin', origin);
       res.setHeader('Vary', 'Origin');
@@ -175,8 +216,6 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     if (req.headers['access-control-request-private-network'] === 'true' && origin) {
       res.setHeader('Access-Control-Allow-Private-Network', 'true');
     }
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'no-referrer');
 
     if (req.method === 'OPTIONS') {
       res.statusCode = origin ? 204 : 403;
@@ -196,11 +235,11 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
 
     if (url === '/api/usage') {
       if (!claudeDataExists()) {
-        json(404, { error: 'No Claude Code history found', expected: getClaudeDataPath() });
+        json(404, { error: 'No Claude Code history found' });
         return;
       }
       try {
-        const { report } = await buildReport({ days: options.days, save: false });
+        const report = await currentReport();
         json(200, report);
         log(chalk.gray(`  ${new Date().toLocaleTimeString()} read ${report.usage.messages.count} replies`));
       } catch (error) {
@@ -235,9 +274,26 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     } else {
       const size = fs.statSync(file).size;
       res.setHeader('Content-Length', size);
-      if (req.method === 'HEAD') res.end();
-      else fs.createReadStream(file).pipe(res);
+      if (req.method === 'HEAD') {
+        res.end();
+      } else {
+        // pipeline closes the file when the other end goes away, so an aborted download cannot leave it open
+        pipeline(fs.createReadStream(file), res, () => { /* a reader that left is not an error */ });
+      }
     }
+  };
+
+  const server = createServer((req, res) => {
+    // Whatever goes wrong inside one request must not stop the server
+    handle(req, res).catch(() => {
+      if (res.headersSent) {
+        res.destroy();
+      } else {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ error: 'Server error' }));
+      }
+    });
   });
 
   if (options.port === undefined) {
@@ -266,12 +322,26 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   };
 }
 
+/**
+ * The program that opens an address in the default browser. On macOS and Windows it is given by its full path:
+ * Windows looks in the current folder first, so a bare "rundll32" could run a file planted in the folder you start from.
+ */
+export function browserCommand(
+  url: string,
+  platform: string = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): [string, string[]] {
+  if (platform === 'darwin') return ['/usr/bin/open', [url]];
+  if (platform === 'win32') {
+    const root = env.SystemRoot || env.windir || 'C:\\Windows';
+    return [`${root}\\System32\\rundll32.exe`, ['url.dll,FileProtocolHandler', url]];
+  }
+  return ['xdg-open', [url]];
+}
+
 /** Open an address in the default browser. Fails quietly: the address is printed anyway. */
 export function openBrowser(url: string): void {
-  const [cmd, args]: [string, string[]] =
-    process.platform === 'darwin' ? ['open', [url]]
-    : process.platform === 'win32' ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
-    : ['xdg-open', [url]];
+  const [cmd, args] = browserCommand(url);
   try {
     const child = spawn(cmd, args, { stdio: 'ignore', detached: true });
     child.on('error', () => {});
@@ -282,14 +352,26 @@ export function openBrowser(url: string): void {
 }
 
 export interface LaunchOptions {
+  /** The command to suggest when the port is busy. */
+  retryCommand?: string;
   port?: number;
   days?: number;
   origins?: string[];
+  /** Let the dashboard's own dev ports read the data. Only for developing the dashboard. */
+  devOrigins?: boolean;
   open: boolean;
 }
 
 /** Start the server, say where it is, and stay running until Ctrl+C. */
 export async function launch(options: LaunchOptions): Promise<void> {
+  if (options.port !== undefined && (!Number.isInteger(options.port) || options.port < 0 || options.port > 65535)) {
+    console.error(chalk.red('\n  --port must be a whole number from 0 to 65535 (for example 3456).\n'));
+    process.exit(1);
+  }
+  if (options.days !== undefined && (!Number.isInteger(options.days) || options.days < 1)) {
+    console.error(chalk.red('\n  --days must be a whole number, 1 or more.\n'));
+    process.exit(1);
+  }
   console.log(chalk.cyan('\n  LLM Usage Analyzer\n'));
 
   const webDir = findWebDir();
@@ -304,12 +386,12 @@ export async function launch(options: LaunchOptions): Promise<void> {
 
   let running: RunningServer;
   try {
-    running = await startServer({ port: options.port, days: options.days, origins: options.origins, webDir });
+    running = await startServer({ port: options.port, days: options.days, origins: options.origins, devOrigins: options.devOrigins, webDir });
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     if (e.code === 'EADDRINUSE') {
-      console.error(chalk.red(`\n  Port ${options.port} is already in use.`));
-      console.error(chalk.gray(`  Stop the other program, or try: llm-usage-analyzer --port ${(options.port ?? DEFAULT_PORT) + 1}\n`));
+      console.error(chalk.red(`\n  Port ${options.port ?? DEFAULT_PORT} is already in use.`));
+      console.error(chalk.gray(`  Stop the other program, or try: ${options.retryCommand ?? 'llm-usage-analyzer'} --port ${(options.port ?? DEFAULT_PORT) + 1}\n`));
     } else {
       console.error(chalk.red(`\n  Could not start the server: ${e.message}\n`));
     }
@@ -332,13 +414,38 @@ export async function launch(options: LaunchOptions): Promise<void> {
   });
 }
 
+/**
+ * Turn an --origin value into a clean origin like "https://example.com", or null when it is not one.
+ * Rejects "null", "*", other schemes, and anything with a path.
+ */
+export function normalizeOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+    if (url.origin === 'null' || url.username || url.password || url.search || url.hash) return null;
+    if (url.pathname !== '/' || value.replace(/\/$/, '') !== url.origin) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
 const collect = (value: string, previous: string[] = []) => [...previous, value];
 
 export const serveCommand = new Command('serve')
-  .description('Start the local server without opening a browser (for the dev dashboard or a hosted copy)')
-  .option('-p, --port <number>', `Port to listen on (default: ${DEFAULT_PORT})`, (v) => parseInt(v, 10))
-  .option('-d, --days <number>', 'Only include the last N days', (v) => parseInt(v, 10))
-  .option('--origin <url>', 'Extra dashboard address allowed to read data (repeatable)', collect, [])
+  .description('Start the local server without opening a browser (for developing the dashboard)')
+  .option('-p, --port <number>', `Port to listen on (default: ${DEFAULT_PORT})`, wholeNumber)
+  .option('-d, --days <number>', 'Only include the last N days', wholeNumber)
+  .option('--origin <url>', 'Advanced: extra dashboard address allowed to read data (repeatable)', collect, [])
   .action(async (options: { port?: number; days?: number; origin: string[] }) => {
-    await launch({ port: options.port ?? DEFAULT_PORT, days: options.days, origins: options.origin, open: false });
+    const origins: string[] = [];
+    for (const value of options.origin) {
+      const clean = normalizeOrigin(value);
+      if (!clean) {
+        console.error(chalk.red(`\n  --origin must look like https://example.com (no path, no *). Got: ${JSON.stringify(value)}\n`));
+        process.exit(1);
+      }
+      origins.push(clean);
+    }
+    await launch({ port: options.port ?? DEFAULT_PORT, days: options.days, origins, devOrigins: true, open: false, retryCommand: 'llm-usage-analyzer serve' });
   });

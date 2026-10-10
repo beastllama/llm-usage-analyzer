@@ -1,6 +1,8 @@
 import { StoredReport, TrendData, UsageTrend, UsageReport } from '../types';
 import { costByModel, tokenCost } from './pricing';
 import { spanDays } from './analysisService';
+import { estimateQuality } from './estimate';
+import { calendarDays, parseDay, shiftDay } from './format';
 
 /** Cost of a report, summed by model at list prices. */
 function calculateReportCost(report: UsageReport): number {
@@ -9,6 +11,10 @@ function calculateReportCost(report: UsageReport): number {
 
 /** Month key (YYYY-MM) for a day key (YYYY-MM-DD). Day keys are already calendar dates, so no timezone shift. */
 const monthOf = (dayKey: string) => dayKey.slice(0, 7);
+const monthIndex = (monthKey: string) => {
+  const [year, month] = monthKey.split('-').map(Number);
+  return year * 12 + (month - 1);
+};
 
 /**
  * Saved uploads often cover the same days (a cumulative scan uploaded twice).
@@ -28,23 +34,15 @@ export function pickNonOverlapping(reports: StoredReport[]): StoredReport[] {
   return picked;
 }
 
+/** True when some of the report's usage has a price. A claude.ai chat export has none, so it cannot show a cost trend. */
+export const hasPricedUsage = (stored: StoredReport): boolean => estimateQuality(stored.report).pricedTokens > 0;
+
 /**
- * Group stored reports by the month of each day they cover.
- * A report that spans two months is counted in both, not dumped into its start month.
+ * The saved reports that Trends uses: only reports with priced usage, and no report that overlaps a newer one.
+ * (A chat export and a Claude Code report can cover the same days. Only the Claude Code one has prices.)
  */
-export function groupReportsByMonth(reports: StoredReport[]): Map<string, StoredReport[]> {
-  const grouped = new Map<string, StoredReport[]>();
-
-  for (const stored of reports) {
-    const months = new Set(stored.report.usage.messages.by_day.map(d => monthOf(d.date)));
-    if (months.size === 0) months.add(monthOf(stored.report.period.start.slice(0, 10)));
-    for (const monthKey of months) {
-      if (!grouped.has(monthKey)) grouped.set(monthKey, []);
-      grouped.get(monthKey)!.push(stored);
-    }
-  }
-
-  return grouped;
+export function trendReports(all: StoredReport[]): StoredReport[] {
+  return pickNonOverlapping(all.filter(hasPricedUsage));
 }
 
 /**
@@ -52,7 +50,7 @@ export function groupReportsByMonth(reports: StoredReport[]): Map<string, Stored
  * so a report that spans two months is split between them.
  */
 export function calculateMonthlyTrends(allReports: StoredReport[]): TrendData[] {
-  const reports = pickNonOverlapping(allReports);
+  const reports = trendReports(allReports);
   const months = new Map<string, TrendData & { reportIds: Set<string> }>();
 
   const bucket = (monthKey: string) => {
@@ -99,15 +97,18 @@ export function calculateMonthlyTrends(allReports: StoredReport[]): TrendData[] 
     .sort((a, b) => a.period.localeCompare(b.period));
 }
 
-/** A month counts as "full enough" to compare only when it has at least this many active days. */
-const MIN_DAYS_TO_COMPARE = 20;
+/**
+ * A month is compared with the one before only when both have at least this many active days.
+ * A month with fewer is probably unfinished (or only partly saved), and a comparison would be unfair.
+ */
+export const MIN_DAYS_TO_COMPARE = 20;
 
 /**
  * Calculate usage trend analysis.
- * percentChange is null when the latest month is too short to compare fairly.
+ * percentChange is null unless the latest month and the month right before it both have enough days to compare fairly.
  */
 export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | null {
-  const reports = pickNonOverlapping(allReports);
+  const reports = trendReports(allReports);
   if (reports.length === 0) return null;
 
   const monthlyData = calculateMonthlyTrends(reports);
@@ -117,7 +118,8 @@ export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | nul
   if (monthlyData.length >= 2) {
     const current = monthlyData[monthlyData.length - 1];
     const previous = monthlyData[monthlyData.length - 2];
-    if (previous.totalCost > 0 && current.activeDays >= MIN_DAYS_TO_COMPARE) {
+    const adjacent = monthIndex(current.period) - monthIndex(previous.period) === 1;
+    if (adjacent && previous.totalCost > 0 && current.activeDays >= MIN_DAYS_TO_COMPARE && previous.activeDays >= MIN_DAYS_TO_COMPARE) {
       percentChange = ((current.totalCost - previous.totalCost) / previous.totalCost) * 100;
     }
   }
@@ -127,11 +129,16 @@ export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | nul
   const totalDays = reports.reduce((acc, s) => acc + spanDays(s.report.period.start, s.report.period.end), 0);
   const avgDailyCost = totalDays > 0 ? totalCost / totalDays : 0;
 
+  const unpricedTokens = reports.reduce((acc, s) => acc + costByModel(s.report.usage.tokens.by_model).unpricedTokens, 0);
+
   return {
     data: monthlyData,
     percentChange,
     avgDailyCost,
     projectedMonthlyCost: avgDailyCost * 30,
+    reportsUsed: reports.length,
+    hasUnpriced: unpricedTokens > 0,
+    lowerBound: reports.some((s) => estimateQuality(s.report).lowerBound),
   };
 }
 
@@ -144,7 +151,7 @@ export function getDailyBreakdown(allReports: StoredReport[]): Array<{
   cost: number;
   messages: number;
 }> {
-  const reports = pickNonOverlapping(allReports);
+  const reports = trendReports(allReports);
 
   const dayMap = new Map<string, { tokens: number; cost: number; messages: number }>();
 
@@ -172,6 +179,22 @@ export function getDailyBreakdown(allReports: StoredReport[]): Array<{
 }
 
 /**
+ * The last `count` calendar days, ending on the latest day that has data. Quiet days are there as zero,
+ * so a chart of "the last 30 days" really covers 30 days and not the last 30 days with activity.
+ */
+export function getRecentDays(allReports: StoredReport[], count = 30): ReturnType<typeof getDailyBreakdown> {
+  const rows = getDailyBreakdown(allReports);
+  if (rows.length === 0) return [];
+  const end = rows[rows.length - 1].date;
+  // Never reach back past the first day with data: before that, nothing is known, which is not the same as nothing happened
+  const start = [shiftDay(end, -(count - 1)), rows[0].date].sort().pop() as string;
+  const byDate = new Map(rows.map((r) => [r.date, r]));
+  return calendarDays(start, end).map(
+    (date) => byDate.get(date) ?? { date, tokens: 0, cost: 0, messages: 0 },
+  );
+}
+
+/**
  * Get usage heatmap by day of week
  */
 export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
@@ -179,7 +202,7 @@ export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
   avgTokens: number;
   avgMessages: number;
 }> {
-  const reports = pickNonOverlapping(allReports);
+  const reports = trendReports(allReports);
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const dayStats = dayNames.map(() => ({ totalTokens: 0, totalMessages: 0, count: 0 }));
@@ -187,8 +210,8 @@ export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
   for (const stored of reports) {
     for (const day of stored.report.usage.messages.by_day) {
       // Parse as a calendar date so the weekday does not shift with timezone
-      const [y, m, d] = day.date.split('-').map(Number);
-      const dayOfWeek = new Date(y, m - 1, d).getDay();
+      const dayOfWeek = parseDay(day.date).getDay();
+      if (!dayStats[dayOfWeek]) continue;
 
       dayStats[dayOfWeek].totalTokens += day.input + day.output;
       dayStats[dayOfWeek].totalMessages += day.count;
@@ -213,7 +236,7 @@ export function getModelDistribution(allReports: StoredReport[]): Array<{
   cost: number;
   percentage: number;
 }> {
-  const reports = pickNonOverlapping(allReports);
+  const reports = trendReports(allReports);
 
   const modelStats = new Map<string, { input: number; output: number; cost: number }>();
   let totalTokens = 0;
@@ -233,7 +256,7 @@ export function getModelDistribution(allReports: StoredReport[]): Array<{
     .map(([model, s]) => {
       const modelTokens = s.input + s.output;
       return {
-        model: model.replace('claude-', '').replace('gpt-', ''),
+        model: model.replace('claude-', ''),
         tokens: modelTokens,
         cost: s.cost,
         percentage: totalTokens > 0 ? (modelTokens / totalTokens) * 100 : 0,

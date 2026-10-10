@@ -1,7 +1,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { StringDecoder } from 'string_decoder';
 import type { ClaudeMessage, UsageReport, ScanOptions, DayUsage } from '../types.js';
+import { plain } from '../fsafe.js';
+import { priceFor } from '../pricing.js';
 
 export interface ParseProgress {
   projectsFound: number;
@@ -15,6 +18,8 @@ export interface DayDetail {
   count: number;
   input: number;
   output: number;
+  /** Replies whose log never recorded how they ended, so their output count may be cut short. */
+  unfinished?: number;
   by_model: Record<string, { input: number; output: number; cache_read: number; cache_write: number; cache_write_1h: number }>;
 }
 
@@ -58,11 +63,15 @@ export function findTranscripts(dir: string, errors: string[]): string[] {
     try {
       entries = fs.readdirSync(current, { withFileTypes: true });
     } catch {
-      errors.push(`Could not read folder: ${current}`);
+      if (errors.length < MAX_ERRORS_KEPT) errors.push(`Could not read folder: ${current}`);
       return;
     }
     for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
+      if (entry.isSymbolicLink()) {
+        // Links are not followed (they could lead anywhere), so what is behind one is not counted. Say so.
+        if (errors.length < MAX_ERRORS_KEPT) errors.push(`Skipped a link, not counted: ${path.join(current, entry.name)}`);
+        continue;
+      }
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) walk(full);
       else if (entry.isFile() && entry.name.endsWith('.jsonl')) found.push(full);
@@ -83,6 +92,37 @@ export function parseLocalDate(text: string): Date | null {
   return d;
 }
 
+// Limits that keep a strange file from stalling or crashing a scan
+const SMALL_FILE_BYTES = 8 * 1024 * 1024;   // read whole, which is fastest
+const CHUNK_BYTES = 1024 * 1024;            // bigger files are read a chunk at a time
+const MAX_LINE_CHARS = 32 * 1024 * 1024;    // a longer line cannot be a usage record, so it is skipped
+const MAX_ERRORS_KEPT = 50;
+const DAY_MS = 24 * 60 * 60 * 1000;
+// Claude Code did not exist before this, so an older timestamp is a bad clock. A day ahead allows for time zones.
+const EARLIEST_PLAUSIBLE = Date.UTC(2024, 0, 1);
+
+// No real request comes near this (the biggest context windows are about a million tokens). A count above it is a damaged
+// or invented log line, and counting it would turn a total into Infinity (and a saved file into nulls).
+const MAX_TOKENS_PER_COUNT = 1_000_000_000;
+// A model name longer than this is not a model name. It is cut, so one bad line cannot fill the terminal or the saved history.
+const MAX_MODEL_NAME_CHARS = 100;
+
+/** A token count from the log: a whole number of 0 or more. Anything else (text, negative, NaN, absurdly large) counts as 0. */
+export function tokenCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= MAX_TOKENS_PER_COUNT ? Math.floor(value) : 0;
+}
+
+/** A usable timestamp, or null when it is missing, invalid, before 2024, or more than a day in the future. */
+function plausibleTime(value: unknown, now: number): Date | null {
+  if (typeof value !== 'string') return null;
+  const d = new Date(value);
+  const t = d.getTime();
+  return Number.isNaN(t) || t < EARLIEST_PLAUSIBLE || t > now + DAY_MS ? null : d;
+}
+
+/** A dictionary that accepts any key, including "__proto__" and "constructor". */
+const dictionary = <T>(): Record<string, T> => Object.create(null);
+
 /** One API response, as read from the transcript. */
 interface Reply {
   model: string;
@@ -91,9 +131,63 @@ interface Reply {
   input: number;
   output: number;
   cacheRead: number;
-  cacheWrite: number;
+  cacheWrite5m: number;
   cacheWrite1h: number;
-  cacheWriteAll: number;
+  /** True when some line of this reply says how it ended (a stop_reason). */
+  stopped: boolean;
+}
+
+/**
+ * Call `onLine` for every line of a file. Small files are read whole. Big files are read a chunk at a time,
+ * so a very large transcript cannot run out of memory, and the server can answer other requests in between.
+ */
+async function forEachLine(
+  file: string,
+  size: number,
+  onLine: (line: string, index: number) => void,
+  onSkippedLine: () => void,
+): Promise<void> {
+  if (size <= SMALL_FILE_BYTES) {
+    const lines = fs.readFileSync(file, 'utf-8').split('\n');
+    for (let i = 0; i < lines.length; i++) onLine(lines[i], i);
+    return;
+  }
+
+  const handle = await fs.promises.open(file, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(CHUNK_BYTES);
+    const decoder = new StringDecoder('utf8');
+    let carry = '';
+    let skipping = false;
+    let index = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      const text = decoder.write(buffer.subarray(0, bytesRead));
+      let start = 0;
+      for (;;) {
+        const newline = text.indexOf('\n', start);
+        if (newline === -1) break;
+        if (skipping) skipping = false; // the end of an over-long line
+        else onLine(carry + text.slice(start, newline), index);
+        carry = '';
+        index++;
+        start = newline + 1;
+      }
+      if (!skipping) {
+        carry += text.slice(start);
+        if (carry.length > MAX_LINE_CHARS) {
+          carry = '';
+          skipping = true;
+          onSkippedLine();
+        }
+      }
+    }
+    carry += decoder.end();
+    if (!skipping && carry) onLine(carry, index);
+  } finally {
+    await handle.close();
+  }
 }
 
 /**
@@ -112,13 +206,19 @@ export async function scanClaudeUsage(
     duplicatesSkipped: 0,
     errors: [],
   };
+  const addError = (message: string) => {
+    // Paths come from the disk and can hold control characters, so they are cleaned before they are kept (and later printed)
+    if (progress.errors.length < MAX_ERRORS_KEPT) progress.errors.push(plain(message).slice(0, 400));
+  };
+
+  const nowMs = Date.now();
 
   // Date window. The end date includes its whole day.
   let rangeStart: Date | null = null;
   let rangeEnd: Date | null = null;
   if (options.days) {
-    rangeEnd = new Date();
-    rangeStart = new Date(Date.now() - options.days * 24 * 60 * 60 * 1000);
+    rangeEnd = new Date(nowMs);
+    rangeStart = new Date(nowMs - options.days * DAY_MS);
   }
   if (options.startDate) {
     rangeStart = parseLocalDate(options.startDate) ?? rangeStart;
@@ -129,7 +229,7 @@ export async function scanClaudeUsage(
   }
   const hasRange = rangeStart !== null || rangeEnd !== null;
 
-  const now = new Date();
+  const now = new Date(nowMs);
   const report: UsageReport = {
     provider: 'anthropic',
     source: 'local_agent',
@@ -137,19 +237,19 @@ export async function scanClaudeUsage(
     // Plan is chosen in the dashboard, so the scan does not assume one
     plan: { name: 'Not set', price_usd: 0, type: 'subscription' },
     usage: {
-      tokens: { input: 0, output: 0, cached: 0, by_model: {} },
-      messages: { count: 0, by_day: [] },
+      tokens: { input: 0, output: 0, cached: 0, by_model: dictionary() },
+      messages: { count: 0, by_day: [], unfinished: 0 },
       sessions: { count: 0 },
     },
   };
 
-  const dayDetail: Record<string, DayDetail> = {};
+  const dayDetail: Record<string, DayDetail> = dictionary();
   const sessionIds = new Set<string>();
   let minTs: Date | null = null;
   let maxTs: Date | null = null;
 
   if (!claudeDataExists()) {
-    progress.errors.push(`Claude Code data folder not found: ${getClaudeDataPath()}`);
+    addError(`Claude Code data folder not found: ${getClaudeDataPath()}`);
     return { report, progress, dayDetail };
   }
 
@@ -158,87 +258,115 @@ export async function scanClaudeUsage(
   progress.projectsFound = new Set(files.map(f => path.dirname(path.relative(projectsDir, f)).split(path.sep)[0])).size;
   onProgress?.(progress);
 
-  // Pass 1: one entry per reply. A reply can appear on several lines, and later lines can
-  // carry a larger output count, so the largest output seen for each reply is kept.
+  // Pass 1: one entry per reply. A reply can appear on several lines. Every count keeps the largest value
+  // seen for that reply, and the reply is "stopped" if any line says how it ended.
   const replies = new Map<string, Reply>();
 
+  const handleLine = (file: string, rawLine: string, i: number) => {
+    // Most lines are prompts and tool results. Only an assistant line has a "usage" key, so skip the rest cheaply.
+    if (!rawLine.includes('"usage"')) return;
+    const line = i === 0 && rawLine.charCodeAt(0) === 0xfeff ? rawLine.slice(1) : rawLine;
+    const entry = parseJsonlLine(line);
+    const msg = entry?.message;
+    if (!entry || !msg || typeof msg !== 'object' || !msg.usage || typeof msg.usage !== 'object') return;
+    // Claude Code writes placeholder rows (no real API call) for interrupted turns and API errors
+    if (msg.model === '<synthetic>' || entry.isApiErrorMessage === true) return;
+
+    const ts = plausibleTime(entry.timestamp, nowMs);
+
+    // With a date window, entries without a usable timestamp cannot be placed, so they are left out
+    if (hasRange && (!ts || (rangeStart && ts < rangeStart) || (rangeEnd && ts >= rangeEnd))) return;
+
+    const u = msg.usage;
+    const input = tokenCount(u.input_tokens);
+    const output = tokenCount(u.output_tokens);
+    const cacheRead = tokenCount(u.cache_read_input_tokens);
+    // Cache writes: the flat total is the whole, and the 1-hour part is a share of it. Anything the split
+    // does not account for is treated as 5-minute, so a split that covers only part of the writes cannot lose tokens.
+    const flatWrites = tokenCount(u.cache_creation_input_tokens);
+    const split5m = tokenCount(u.cache_creation?.ephemeral_5m_input_tokens);
+    const split1h = tokenCount(u.cache_creation?.ephemeral_1h_input_tokens);
+    const allWrites = Math.max(flatWrites, split5m + split1h);
+    const cacheWrite1h = Math.min(split1h, allWrites);
+    const cacheWrite5m = allWrites - cacheWrite1h;
+    const stopped = msg.stop_reason != null;
+
+    // Use the message id, then the request id. A line with neither is its own reply.
+    const key = (typeof msg.id === 'string' && msg.id) || (typeof entry.requestId === 'string' && entry.requestId) || `${file}#${i}`;
+    const existing = replies.get(key);
+    if (existing) {
+      progress.duplicatesSkipped++;
+      existing.input = Math.max(existing.input, input);
+      existing.output = Math.max(existing.output, output);
+      existing.cacheRead = Math.max(existing.cacheRead, cacheRead);
+      existing.cacheWrite5m = Math.max(existing.cacheWrite5m, cacheWrite5m);
+      existing.cacheWrite1h = Math.max(existing.cacheWrite1h, cacheWrite1h);
+      existing.stopped = existing.stopped || stopped;
+      return;
+    }
+
+    replies.set(key, {
+      model: typeof msg.model === 'string' && msg.model ? msg.model.slice(0, MAX_MODEL_NAME_CHARS) : 'unknown',
+      ts,
+      sessionId: (typeof entry.sessionId === 'string' && entry.sessionId) || file,
+      input,
+      output,
+      cacheRead,
+      cacheWrite5m,
+      cacheWrite1h,
+      stopped,
+    });
+  };
+
+  let lastYield = Date.now();
   for (const file of files) {
     progress.filesProcessed++;
 
-    let content: string;
     try {
-      content = fs.readFileSync(file, 'utf-8');
+      const size = fs.statSync(file).size;
+      await forEachLine(
+        file,
+        size,
+        (line, i) => handleLine(file, line, i),
+        () => addError(`Skipped a line longer than ${MAX_LINE_CHARS / (1024 * 1024)} MB in: ${file}`),
+      );
     } catch {
-      progress.errors.push(`Could not read: ${file}`);
+      addError(`Could not read: ${file}`);
       continue;
     }
 
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const entry = parseJsonlLine(lines[i]);
-      const msg = entry?.message;
-      if (!entry || !msg?.usage) continue;
-
-      let ts: Date | null = entry.timestamp ? new Date(entry.timestamp) : null;
-      if (ts && Number.isNaN(ts.getTime())) ts = null;
-
-      // With a date window, entries without a timestamp cannot be placed, so they are left out
-      if (hasRange && (!ts || (rangeStart && ts < rangeStart) || (rangeEnd && ts >= rangeEnd))) continue;
-
-      const output = msg.usage.output_tokens || 0;
-      // Use the message id, then the request id. A line with neither is its own reply.
-      const key = msg.id || entry.requestId || `${file}#${i}`;
-      const existing = replies.get(key);
-      if (existing) {
-        progress.duplicatesSkipped++;
-        existing.output = Math.max(existing.output, output);
-        continue;
-      }
-
-      const creation = msg.usage.cache_creation;
-      const cacheWriteAll = msg.usage.cache_creation_input_tokens || 0;
-      const cacheWrite1h = creation?.ephemeral_1h_input_tokens || 0;
-      replies.set(key, {
-        model: msg.model || 'unknown',
-        ts,
-        sessionId: entry.sessionId || file,
-        input: msg.usage.input_tokens || 0,
-        output,
-        cacheRead: msg.usage.cache_read_input_tokens || 0,
-        // Writes are split by cache lifetime when the log says so (1-hour writes cost more).
-        // Older logs have no split, so every write is treated as 5-minute.
-        cacheWrite: creation
-          ? (creation.ephemeral_5m_input_tokens ?? Math.max(0, cacheWriteAll - cacheWrite1h))
-          : cacheWriteAll,
-        cacheWrite1h,
-        cacheWriteAll,
-      });
-    }
-
     onProgress?.(progress);
+    // Let the server answer other requests during a long scan
+    if (Date.now() - lastYield > 40) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      lastYield = Date.now();
+    }
   }
 
   // Pass 2: totals from the replies
   const tokens = report.usage.tokens;
+  let unfinishedTotal = 0;
   for (const r of replies.values()) {
     let model = r.model;
-    // Haiku 5.5 bills a whole request at a higher rate when its prompt is over 100K tokens
-    const promptTokens = r.input + r.cacheRead + r.cacheWriteAll;
-    if (model.startsWith('claude-haiku-5-5') && promptTokens > 100_000) model = 'claude-haiku-5-5-long-prompt';
+    // Haiku 5.5 bills a whole request at a higher rate when its prompt is over 100K tokens.
+    // Only a model the price table knows as Haiku 5.5 is moved: a name that merely starts the same is not guessed at.
+    const promptTokens = r.input + r.cacheRead + r.cacheWrite5m + r.cacheWrite1h;
+    if (promptTokens > 100_000 && priceFor(model) === priceFor('claude-haiku-5-5')) model = 'claude-haiku-5-5-long-prompt';
 
     tokens.input += r.input;
     tokens.output += r.output;
-    tokens.cached = (tokens.cached || 0) + r.cacheRead + r.cacheWrite + r.cacheWrite1h;
+    tokens.cached = (tokens.cached || 0) + r.cacheRead + r.cacheWrite5m + r.cacheWrite1h;
 
     const modelTotals = tokens.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
     modelTotals.input += r.input;
     modelTotals.output += r.output;
     modelTotals.cache_read = (modelTotals.cache_read || 0) + r.cacheRead;
-    modelTotals.cache_write = (modelTotals.cache_write || 0) + r.cacheWrite;
+    modelTotals.cache_write = (modelTotals.cache_write || 0) + r.cacheWrite5m;
     modelTotals.cache_write_1h = (modelTotals.cache_write_1h || 0) + r.cacheWrite1h;
     tokens.by_model[model] = modelTotals;
 
     report.usage.messages.count++;
+    if (!r.stopped) unfinishedTotal++;
     progress.messagesProcessed++;
     sessionIds.add(r.sessionId);
 
@@ -247,21 +375,23 @@ export async function scanClaudeUsage(
       if (!maxTs || r.ts > maxTs) maxTs = r.ts;
 
       const day = localDayKey(r.ts);
-      const detail = dayDetail[day] || { count: 0, input: 0, output: 0, by_model: {} };
+      const detail = dayDetail[day] || { count: 0, input: 0, output: 0, by_model: dictionary() };
       detail.count++;
+      if (!r.stopped) detail.unfinished = (detail.unfinished || 0) + 1;
       detail.input += r.input;
       detail.output += r.output;
       const dm = detail.by_model[model] || { input: 0, output: 0, cache_read: 0, cache_write: 0, cache_write_1h: 0 };
       dm.input += r.input;
       dm.output += r.output;
       dm.cache_read += r.cacheRead;
-      dm.cache_write += r.cacheWrite;
+      dm.cache_write += r.cacheWrite5m;
       dm.cache_write_1h += r.cacheWrite1h;
       detail.by_model[model] = dm;
       dayDetail[day] = detail;
     }
   }
 
+  report.usage.messages.unfinished = unfinishedTotal;
   report.usage.sessions.count = sessionIds.size;
   if (minTs) report.period.start = minTs.toISOString();
   if (maxTs) report.period.end = maxTs.toISOString();

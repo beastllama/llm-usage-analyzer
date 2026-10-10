@@ -4,9 +4,10 @@ import { UsageReport } from "./types";
 export const MOCK_DATA: UsageReport = {
   provider: "anthropic",
   source: "demo",
+  // The days below are calendar days on the viewer's clock, so the period is too (not UTC instants)
   period: {
-    start: "2026-09-01T00:00:00.000Z",
-    end: "2026-09-15T23:59:59.000Z",
+    start: new Date(2026, 8, 1, 0, 0, 0).toISOString(),
+    end: new Date(2026, 8, 15, 23, 59, 59).toISOString(),
   },
   plan: {
     name: "Claude Pro",

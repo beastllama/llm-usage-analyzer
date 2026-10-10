@@ -1,5 +1,0 @@
-{
-  "name": "LLM Usage Analyzer",
-  "description": "A dashboard to analyze LLM usage patterns, compare subscription costs against API pay-as-you-go pricing, and receive AI-powered recommendations for the optimal plan.",
-  "requestFramePermissions": []
-}

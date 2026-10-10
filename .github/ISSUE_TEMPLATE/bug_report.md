@@ -22,8 +22,9 @@ If applicable, add screenshots.
 
 ## Environment
 - OS: [e.g., Windows 11, macOS 14, Ubuntu 22.04]
-- Node version: [e.g., 20.10.0]
+- Node version: [run `node -v` and paste the result]
 - Browser: [e.g., Chrome 120]
 
 ## Additional Context
 Any other context about the problem.
+Please don't attach real usage reports or chat exports. They contain your activity.

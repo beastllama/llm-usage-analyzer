@@ -1,5 +1,6 @@
 import { UsageReport } from "../types";
-import { PLANS, PlanKey, costByModel, totalTokens } from "./pricing";
+import { PLANS, PlanKey, costByModel } from "./pricing";
+import { decide, estimateQuality, type EstimateQuality, type Verdict } from "./estimate";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -31,8 +32,11 @@ export interface MonthlyComparison {
   unpricedModels: string[];
   /** False when no token could be priced, so there is nothing to compare. */
   canJudge: boolean;
-  /** "keep": the plan is cheaper than pay-as-you-go. "switch": pay-as-you-go is cheaper. */
-  verdict: "keep" | "switch";
+  /** See Verdict in estimate.ts. */
+  verdict: Verdict;
+  /** True when the pay-as-you-go figure is a minimum (cut-short replies or unpriced models). */
+  lowerBound: boolean;
+  quality: EstimateQuality;
   /** Absolute monthly difference between plan price and pay-as-you-go estimate. */
   difference: number;
 }
@@ -42,10 +46,7 @@ export function calculateAnalysis(report: UsageReport, planKey: PlanKey): Monthl
   const periodDays = spanDays(report.period.start, report.period.end);
   const apiCostMonthly = cost * (30 / periodDays);
   const planPrice = PLANS[planKey].price;
-  const pricedTokens = Object.values(report.usage.tokens.by_model).reduce(
-    (sum, t) => sum + totalTokens(t),
-    0,
-  ) - unpricedTokens;
+  const quality = estimateQuality(report);
 
   return {
     planKey,
@@ -56,8 +57,10 @@ export function calculateAnalysis(report: UsageReport, planKey: PlanKey): Monthl
     lowConfidence: periodDays < 7,
     unpricedTokens,
     unpricedModels,
-    canJudge: pricedTokens > 0,
-    verdict: planPrice <= apiCostMonthly ? "keep" : "switch",
+    canJudge: quality.pricedTokens > 0,
+    verdict: decide(planPrice, apiCostMonthly, quality.lowerBound),
+    lowerBound: quality.lowerBound,
+    quality,
     difference: Math.abs(planPrice - apiCostMonthly),
   };
 }
@@ -88,14 +91,5 @@ export function analyzeUsagePattern(report: UsageReport): UsagePattern {
   };
 }
 
-export const formatTokenNumber = (num: number): string => {
-  if (num >= 1_000_000) {
-    return (num / 1_000_000).toFixed(1) + 'M';
-  }
-  if (num >= 1_000) {
-    return (num / 1_000).toFixed(1) + 'k';
-  }
-  return num.toString();
-};
-
-export const formatUsd = (num: number): string => `$${num.toFixed(2)}`;
+// Formatting lives in format.ts. These names stay available here for the screens that already import them.
+export { formatTokenNumber, formatUsd } from "./format";

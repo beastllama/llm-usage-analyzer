@@ -1,247 +1,107 @@
-import { UsageReport, StoredReport, UserSettings } from '../types';
+import { UsageReport, StoredReport } from '../types';
+import { safeLocal } from './safeStorage';
+import { isUsageReport } from './fileImport';
+import { formatDate } from './format';
 
-const STORAGE_KEYS = {
-  USAGE_HISTORY: 'llm_usage_history',
-  USER_SETTINGS: 'llm_user_settings',
-  STORAGE_VERSION: 'llm_storage_version',
-} as const;
-
-const CURRENT_VERSION = 1;
+const HISTORY_KEY = 'llm_usage_history';
+const UNREADABLE_KEY = `${HISTORY_KEY}_unreadable`;
 const MAX_HISTORY_ITEMS = 50;
 
-// Generate a unique ID
+let counter = 0;
 function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  counter++;
+  return `${Date.now()}-${counter}-${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// Check and migrate storage if needed
-function migrateStorageIfNeeded(): void {
-  const version = localStorage.getItem(STORAGE_KEYS.STORAGE_VERSION);
-  if (!version || parseInt(version) < CURRENT_VERSION) {
-    // Future migrations would go here
-    localStorage.setItem(STORAGE_KEYS.STORAGE_VERSION, CURRENT_VERSION.toString());
-  }
+/** A saved entry the app can open. Anything else (damaged, from an older version, hand-edited) is left out. */
+function isStoredReport(value: unknown): value is StoredReport {
+  const r = value as Partial<StoredReport> | null;
+  return Boolean(
+    r && typeof r === 'object' &&
+    typeof r.id === 'string' && typeof r.savedAt === 'string' && !Number.isNaN(Date.parse(r.savedAt)) &&
+    typeof r.name === 'string' && isUsageReport(r.report),
+  );
 }
 
+/** Reports saved in this browser. Storage that is blocked or full is never an error: the list is just empty. */
 export const storageService = {
-  /**
-   * Initialize storage (call on app mount)
-   */
-  init(): void {
-    migrateStorageIfNeeded();
+  getReports(): StoredReport[] {
+    const raw = safeLocal.get(HISTORY_KEY);
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      // The list is capped when it is saved, but a hand-edited or older list may be longer
+      return Array.isArray(parsed) ? parsed.filter(isStoredReport).slice(0, MAX_HISTORY_ITEMS) : [];
+    } catch {
+      // Keep the unreadable copy so it is not silently overwritten on the next save
+      safeLocal.set(UNREADABLE_KEY, raw);
+      safeLocal.remove(HISTORY_KEY);
+      return [];
+    }
   },
 
-  /**
-   * Save a usage report to history
-   */
-  saveReport(report: UsageReport, name?: string): StoredReport {
-    const history = this.getReports();
+  /** Returns false when the browser would not keep the list (storage full or blocked). */
+  setReports(reports: StoredReport[]): boolean {
+    return safeLocal.set(HISTORY_KEY, JSON.stringify(reports));
+  },
 
+  /** Save a report at the front of the list. Returns null when it could not be kept. */
+  saveReport(report: UsageReport, name?: string): StoredReport | null {
     const stored: StoredReport = {
       id: generateId(),
       report,
       savedAt: new Date().toISOString(),
       name: name || this.generateReportName(report),
     };
-
-    // Add to beginning (most recent first)
-    history.unshift(stored);
-
-    // Limit history size
-    if (history.length > MAX_HISTORY_ITEMS) {
-      history.pop();
-    }
-
-    localStorage.setItem(STORAGE_KEYS.USAGE_HISTORY, JSON.stringify(history));
-    return stored;
+    const history = [stored, ...this.getReports()].slice(0, MAX_HISTORY_ITEMS);
+    return this.setReports(history) ? stored : null;
   },
 
-  /**
-   * Get all saved reports
-   */
-  getReports(): StoredReport[] {
-    let data: string | null = null;
-    try {
-      data = localStorage.getItem(STORAGE_KEYS.USAGE_HISTORY);
-      const parsed = data ? JSON.parse(data) : [];
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      // Keep the unreadable copy so it is not silently overwritten on the next save
-      if (data) {
-        try {
-          localStorage.setItem(`${STORAGE_KEYS.USAGE_HISTORY}_unreadable_${Date.now()}`, data);
-          localStorage.removeItem(STORAGE_KEYS.USAGE_HISTORY);
-        } catch {
-          // Storage unavailable. Nothing more to do.
-        }
-      }
-      console.error('Saved reports could not be read. A backup copy was kept.');
-      return [];
-    }
-  },
-
-  /**
-   * Replace the data of an existing saved report (keeps its id and name)
-   */
-  updateReportData(id: string, report: UsageReport): StoredReport | undefined {
+  /** Replace the data of a saved report (keeps its id and name) and move it to the front. */
+  updateReportData(id: string, report: UsageReport): boolean {
     const history = this.getReports();
-    const existing = history.find(r => r.id === id);
-    if (!existing) return undefined;
+    const existing = history.find((r) => r.id === id);
+    if (!existing) return false;
     existing.report = report;
     existing.savedAt = new Date().toISOString();
-    localStorage.setItem(STORAGE_KEYS.USAGE_HISTORY, JSON.stringify(history));
-    return existing;
+    return this.setReports([existing, ...history.filter((r) => r.id !== id)]);
+  },
+
+  deleteReport(id: string): boolean {
+    return this.setReports(this.getReports().filter((r) => r.id !== id));
   },
 
   /**
-   * Get a single report by ID
+   * Put deleted reports back (for Undo). Only these reports are added, to the list as it is now, so anything saved
+   * since the delete stays. Reports already in the list are not added twice.
    */
-  getReportById(id: string): StoredReport | undefined {
-    const history = this.getReports();
-    return history.find(r => r.id === id);
+  restoreReports(entries: StoredReport[]): boolean {
+    const current = this.getReports();
+    const have = new Set(current.map((r) => r.id));
+    const merged = [...current, ...entries.filter((e) => !have.has(e.id))]
+      .sort((a, b) => b.savedAt.localeCompare(a.savedAt))
+      .slice(0, MAX_HISTORY_ITEMS);
+    return this.setReports(merged);
   },
 
-  /**
-   * Delete a report by ID
-   */
-  deleteReport(id: string): void {
-    const history = this.getReports().filter(r => r.id !== id);
-    localStorage.setItem(STORAGE_KEYS.USAGE_HISTORY, JSON.stringify(history));
-  },
-
-  /**
-   * Update a report's name
-   */
-  renameReport(id: string, name: string): void {
-    const history = this.getReports();
-    const report = history.find(r => r.id === id);
-    if (report) {
-      report.name = name;
-      localStorage.setItem(STORAGE_KEYS.USAGE_HISTORY, JSON.stringify(history));
-    }
-  },
-
-  /**
-   * Clear all history
-   */
+  /** Remove every saved report, and the damaged copy that was set aside earlier. */
   clearHistory(): void {
-    localStorage.removeItem(STORAGE_KEYS.USAGE_HISTORY);
+    safeLocal.remove(HISTORY_KEY);
+    safeLocal.remove(UNREADABLE_KEY);
   },
 
-  /**
-   * Get user settings
-   */
-  getSettings(): UserSettings {
-    try {
-      const data = localStorage.getItem(STORAGE_KEYS.USER_SETTINGS);
-      return data ? JSON.parse(data) : {};
-    } catch {
-      return {};
-    }
-  },
-
-  /**
-   * Save user settings
-   */
-  saveSettings(settings: UserSettings): void {
-    localStorage.setItem(STORAGE_KEYS.USER_SETTINGS, JSON.stringify(settings));
-  },
-
-  /**
-   * Update specific setting
-   */
-  updateSetting<K extends keyof UserSettings>(key: K, value: UserSettings[K]): void {
-    const settings = this.getSettings();
-    settings[key] = value;
-    this.saveSettings(settings);
-  },
-
-  /**
-   * Generate a descriptive name for a report
-   */
+  /** "Sep 1, 2026 to Sep 15, 2026". Two reports from the same month still get different names. */
   generateReportName(report: UsageReport): string {
-    const provider = report.provider.charAt(0).toUpperCase() + report.provider.slice(1);
-    const startDate = new Date(report.period.start);
-    const month = startDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
-    return `${provider} - ${month}`;
+    return `${formatDate(report.period.start)} to ${formatDate(report.period.end)}`;
   },
 
-  /**
-   * Check if a similar report already exists (same provider + period)
-   */
+  /** A saved report that covers the same period, if there is one. */
   findDuplicateReport(report: UsageReport): StoredReport | undefined {
-    const history = this.getReports();
-    return history.find(stored =>
+    return this.getReports().find((stored) =>
       stored.report.provider === report.provider &&
       stored.report.period.start === report.period.start &&
-      stored.report.period.end === report.period.end
+      stored.report.period.end === report.period.end,
     );
-  },
-
-  /**
-   * Export all data as JSON (for backup)
-   */
-  exportAll(): string {
-    return JSON.stringify({
-      version: CURRENT_VERSION,
-      exportedAt: new Date().toISOString(),
-      history: this.getReports(),
-      settings: this.getSettings(),
-    }, null, 2);
-  },
-
-  /**
-   * Import data from JSON backup
-   */
-  importAll(jsonData: string): { success: boolean; imported: number; error?: string } {
-    try {
-      const data = JSON.parse(jsonData);
-
-      if (!data.history || !Array.isArray(data.history)) {
-        return { success: false, imported: 0, error: 'Invalid backup format' };
-      }
-
-      // Merge with existing (avoid duplicates)
-      const existing = this.getReports();
-      const existingIds = new Set(existing.map(r => r.id));
-
-      let imported = 0;
-      for (const report of data.history) {
-        if (!existingIds.has(report.id)) {
-          existing.push(report);
-          imported++;
-        }
-      }
-
-      // Sort by date and trim
-      existing.sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime());
-      const trimmed = existing.slice(0, MAX_HISTORY_ITEMS);
-
-      localStorage.setItem(STORAGE_KEYS.USAGE_HISTORY, JSON.stringify(trimmed));
-
-      // Import settings if present
-      if (data.settings) {
-        const currentSettings = this.getSettings();
-        this.saveSettings({ ...currentSettings, ...data.settings });
-      }
-
-      return { success: true, imported };
-    } catch (e) {
-      return { success: false, imported: 0, error: 'Failed to parse backup file' };
-    }
-  },
-
-  /**
-   * Get storage usage info
-   */
-  getStorageInfo(): { usedBytes: number; itemCount: number } {
-    const history = localStorage.getItem(STORAGE_KEYS.USAGE_HISTORY) || '';
-    const settings = localStorage.getItem(STORAGE_KEYS.USER_SETTINGS) || '';
-
-    return {
-      usedBytes: (history.length + settings.length) * 2, // UTF-16
-      itemCount: this.getReports().length,
-    };
   },
 };
 
