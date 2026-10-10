@@ -51,6 +51,8 @@ packages/extension/.plasmo
 .npmrc
 conversations.json
 *.jsonl
+# Except the made-up sample logs the reader tests use (no real usage in them)
+!packages/cli/test/fixtures/*.jsonl
 
 # Dashboard bundled into the CLI package (built by npm run build:app)
 packages/cli/web
