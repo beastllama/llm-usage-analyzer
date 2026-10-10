@@ -38,6 +38,18 @@ interface Restored {
   data: UsageReport[] | null;
   reportId: string | null;
   view: ViewMode;
+  /** The saved reports of the multi-tool file that is open, in order. */
+  bundleIds?: string[];
+}
+
+/** The saved ids of the open multi-tool file, from this tab's session. */
+function readBundleIds(): string[] | null {
+  try {
+    const ids: unknown = JSON.parse(safeSession.get('currentReportIds') ?? 'null');
+    return Array.isArray(ids) && ids.length > 1 && ids.every((id) => typeof id === 'string') ? ids : null;
+  } catch {
+    return null;
+  }
 }
 
 /** What the screen shows when the page opens: the saved list, and where the person was before a reload. Read once, before the first paint. */
@@ -49,6 +61,12 @@ function restoreSession(): Restored {
 
   const savedView = safeSession.get('viewMode');
   const savedId = safeSession.get('currentReportId');
+  // A file with one report per tool is put back together from its saved reports
+  const bundle = readBundleIds();
+  if (savedView === 'dashboard' && bundle) {
+    const found = bundle.map((id) => reports.find((r) => r.id === id));
+    if (found.every(Boolean)) return { reports, data: found.map((r) => r!.report), reportId: null, view: 'dashboard', bundleIds: bundle };
+  }
   if (savedView && savedId) {
     const found = reports.find((r) => r.id === savedId);
     if (found) return { reports, data: [found.report], reportId: savedId, view: savedView === 'trends' ? 'trends' : 'dashboard' };
@@ -63,6 +81,7 @@ const App: React.FC = () => {
   const [data, setData] = useState<UsageReport[] | null>(initial.data);
   const [savedReports, setSavedReports] = useState<StoredReport[]>(initial.reports);
   const [currentReportId, setCurrentReportId] = useState<string | null>(initial.reportId);
+  const [bundleIds, setBundleIds] = useState<string[] | null>(initial.bundleIds ?? null);
   const [showHistory, setShowHistory] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(initial.view);
   const [isLiveData, setIsLiveData] = useState(false);
@@ -95,7 +114,9 @@ const App: React.FC = () => {
     safeSession.set('viewMode', viewMode);
     if (currentReportId) safeSession.set('currentReportId', currentReportId);
     else safeSession.remove('currentReportId');
-  }, [viewMode, currentReportId]);
+    if (bundleIds) safeSession.set('currentReportIds', JSON.stringify(bundleIds));
+    else safeSession.remove('currentReportIds');
+  }, [viewMode, currentReportId, bundleIds]);
 
   // The tab title says where you are
   useEffect(() => { document.title = TITLES[viewMode]; }, [viewMode]);
@@ -184,6 +205,7 @@ const App: React.FC = () => {
     liveRun.current++;
     setBoundaryKey((k) => k + 1);
     setData(loaded);
+    setBundleIds(null);
     setViewMode('dashboard');
     setIsLiveData(fromLiveServer);
     setStartNotice(null);
@@ -195,7 +217,7 @@ const App: React.FC = () => {
     // Each report of a file is saved on its own (one per tool). Empty reports are not saved.
     const keepFailed = "This report couldn't be kept in your browser (storage is full or blocked). It still shows for this visit.";
     let failed = false;
-    let firstId: string | null = null;
+    const ids = new Map<UsageReport, string>();
     // Saved newest first, so the first report of the file ends up at the top of the list
     for (const report of [...loaded].reverse()) {
       const total = report.usage.tokens.input + report.usage.tokens.output;
@@ -205,11 +227,13 @@ const App: React.FC = () => {
       const id = duplicate
         ? (storageService.updateReportData(duplicate.id, report) ? duplicate.id : null)
         : storageService.saveReport(report)?.id ?? null;
-      if (id) firstId = id;
+      if (id) ids.set(report, id);
       else failed = true;
     }
-    // A saved report is "the one open" only when the file held one report
-    if (loaded.length === 1 && firstId) setCurrentReportId(firstId);
+    // A saved report is "the one open" only when the file held one report. A file with several is remembered as a
+    // list, so a reload shows all of them again (only when all of them could be saved).
+    if (loaded.length === 1 && ids.size === 1) setCurrentReportId([...ids.values()][0]);
+    if (loaded.length > 1 && ids.size === loaded.length) setBundleIds(loaded.map((r) => ids.get(r)!));
     if (failed) setToast({ message: keepFailed });
     setSavedReports(storageService.getReports());
   }, [currentReportId]);
@@ -234,6 +258,7 @@ const App: React.FC = () => {
     setBoundaryKey((k) => k + 1);
     setData(DEMO_REPORTS);
     setCurrentReportId(null); // Demo data is not saved
+    setBundleIds(null);
     setIsLiveData(false);
     setViewMode('dashboard');
   };
@@ -244,11 +269,13 @@ const App: React.FC = () => {
     setNavigated(true);
     setData(null);
     setCurrentReportId(null);
+    setBundleIds(null);
     setIsLiveData(false);
     setStartNotice(null);
     setViewMode('uploader');
     safeSession.remove('viewMode');
     safeSession.remove('currentReportId');
+    safeSession.remove('currentReportIds');
   };
 
   const handleLoadFromHistory = (stored: StoredReport) => {
@@ -256,6 +283,7 @@ const App: React.FC = () => {
     setBoundaryKey((k) => k + 1);
     setData([stored.report]);
     setCurrentReportId(stored.id);
+    setBundleIds(null);
     setIsLiveData(false);
     setShowHistory(false);
     setViewMode('dashboard');
@@ -286,6 +314,8 @@ const App: React.FC = () => {
     setSavedReports(storageService.getReports());
     announceDeleted([stored]);
     if (currentReportId === stored.id) handleReset();
+    // The open multi-tool file can no longer be put back together after a reload
+    if (bundleIds?.includes(stored.id)) setBundleIds(null);
     // The delete button is gone, so focus goes to a place that still exists
     requestAnimationFrame(() => {
       (historyButtonRef.current ?? document.querySelector<HTMLElement>('main h1'))?.focus();
@@ -295,6 +325,7 @@ const App: React.FC = () => {
   const handleDeleteAll = () => {
     const before = storageService.getReports();
     storageService.clearHistory();
+    setBundleIds(null);
     setSavedReports([]);
     setShowHistory(false);
     announceDeleted(before);

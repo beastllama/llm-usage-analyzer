@@ -1,5 +1,6 @@
 import { UsageReport } from '../types';
 import { looksLikeCursorCsv, parseCursorCsv } from './cursorImport';
+import { PRODUCT_IDS } from './products';
 
 /**
  * The biggest file this page opens. A file is read as text and parsed, which takes about twice its size in memory
@@ -20,7 +21,7 @@ export const ESTIMATED_MODEL = 'Claude (estimated)';
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const PROVIDERS: string[] = ['anthropic', 'openai', 'google', 'xai', 'other'];
-const PRODUCTS: string[] = ['claude', 'chatgpt', 'gemini-api', 'cursor'];
+const PRODUCTS: string[] = PRODUCT_IDS;
 /** A tool name is a short label. A long one is a damaged or invented file. */
 const MAX_TOOL_CHARS = 60;
 const SOURCES: string[] = ['local_agent', 'browser_extension', 'api', 'manual_upload', 'demo', 'manual_entry'];
@@ -57,6 +58,10 @@ export function isUsageReport(json: unknown): json is UsageReport {
   if (!isObject(usage) || !isObject(usage.tokens) || !isObject(usage.messages) || !isObject(usage.sessions)) return false;
 
   if (usage.incomplete !== undefined && typeof usage.incomplete !== 'boolean') return false;
+  if (usage.on_demand !== undefined) {
+    const d = usage.on_demand;
+    if (!isObject(d) || !isCount(d.usd) || !isCount(d.rows) || !isCount(d.rows_without_cost)) return false;
+  }
   const { tokens, messages, sessions } = usage;
   if (!isCount(tokens.input) || !isCount(tokens.output) || !isOptionalCount(tokens.cached)) return false;
   if (!isObject(tokens.by_model)) return false;
@@ -206,7 +211,11 @@ export function parseUsageFile(text: string, size: number): ImportResult {
   // A Cursor usage export is a CSV, not JSON
   if (looksLikeCursorCsv(text)) {
     const cursor = parseCursorCsv(text);
-    return cursor.ok ? { ok: true, reports: [cursor.report] } : { ok: false, error: cursor.error };
+    if (cursor.ok === false) return { ok: false, error: cursor.error };
+    // The same check as any other file, so a strange export cannot reach the screens
+    return isUsageReport(cursor.report)
+      ? { ok: true, reports: [cursor.report] }
+      : { ok: false, error: "We couldn't read that Cursor export. Export it again from Cursor's Usage page." };
   }
 
   let json: unknown;

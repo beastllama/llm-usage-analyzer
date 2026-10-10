@@ -282,7 +282,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
               <p className="text-sm text-slate-300">Export your usage from Cursor and drop the file in.</p>
             </div>
             <button onClick={() => openView('cursor')} className="px-5 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 text-sm font-medium">
-              Show me how
+              Show me how<span className="sr-only"> to export my Cursor usage</span>
             </button>
           </section>
 
@@ -294,7 +294,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
               <p className="text-sm text-slate-300">Export your chats and drop the file in.</p>
             </div>
             <button onClick={() => openView('web')} className="px-5 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 text-sm font-medium">
-              Show me how
+              Show me how<span className="sr-only"> to export my claude.ai chats</span>
             </button>
           </section>
 

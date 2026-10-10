@@ -50,7 +50,7 @@ export function generateCSV(report: UsageReport, plan: string, assumed = false):
   if (report.tool) lines.push(`Tool,${csvCell(report.tool)}`);
   lines.push(`Period Start,${csvCell(report.period.start)}`);
   lines.push(`Period End,${csvCell(report.period.end)}`);
-  lines.push(`Plan,${csvCell(cmp.payAsYouGo ? 'None (pay-as-you-go)' : planLabel(cmp.planKey, assumed))}`);
+  lines.push(`Plan,${csvCell(cmp.payAsYouGo ? 'None (pay-as-you-go)' : cmp.planKey ? planLabel(cmp.planKey, assumed) : 'None')}`);
   if (cmp.canJudge) {
     lines.push(`Answer,${csvCell(answer.headline)}`);
     lines.push(`Detail,${csvCell(answer.detail)}`);
@@ -132,7 +132,7 @@ export function generatePDFHTML(report: UsageReport, plan: string, assumed = fal
 
   const answerBlock = cmp.canJudge ? `
   <div class="answer">
-    <div class="stat-label">Your answer (${escapeHtml(cmp.payAsYouGo ? 'pay-as-you-go' : planLabel(cmp.planKey, assumed))})</div>
+    <div class="stat-label">Your answer (${escapeHtml(cmp.payAsYouGo ? 'pay-as-you-go' : cmp.planKey ? planLabel(cmp.planKey, assumed) : 'no plan')})</div>
     <div class="answer-headline">${escapeHtml(answer.headline)}</div>
     <div>${escapeHtml(answer.detail)}</div>
     ${answer.caveats.map((c) => `<div class="caveat">${escapeHtml(c)}</div>`).join('')}

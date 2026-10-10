@@ -33,6 +33,9 @@ export function describeCaveats(cmp: MonthlyComparison): string[] {
     out.push(`${Math.round(q.unfinishedShare * 100)}% of your replies were logged before they finished, so the real cost is higher.`);
   }
   // Any usage with no price makes the cost a minimum: nothing says how much it would have added
+  if (cmp.onDemandUnknown) {
+    out.push("Cursor billed some use on demand, and the export doesn't say how much, so what you paid is higher.");
+  }
   if (q.incomplete) {
     out.push('Some of your logs could not be read, so the real cost is higher.');
   }
@@ -46,11 +49,16 @@ export function describeAnswer(cmp: MonthlyComparison): Answer {
   const caveats = describeCaveats(cmp);
   const plan = cmp.planKey;
   const estimate = `This is an estimate from ${cmp.product.pricesFrom} published prices.`;
+  // On-demand charges are part of what the plan cost, so they are named whenever they are counted
+  const onDemand = cmp.onDemandMonthly > 0 ? ` That counts about ${formatApproxUsd(cmp.onDemandMonthly)} a month billed on demand.` : '';
+  const yourCost = cmp.onDemandMonthly > 0
+    ? `Your ${plan} plan plus on-demand use came to about ${formatApproxUsd(cmp.paidMonthly)} a month.`
+    : `Your ${plan} plan is ${formatUsd(cmp.planPrice)} a month.`;
 
   if (cmp.payAsYouGo) {
     return {
       tone: 'payg',
-      headline: `${cmp.product.tools} is pay-as-you-go. No plan covers it.`,
+      headline: `${cmp.product.tools} is pay-as-you-go.`,
       detail: cmp.lowerBound
         ? `At ${cmp.product.pricesFrom} published prices, your use costs at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month.`
         : `At ${cmp.product.pricesFrom} published prices, your use costs about ${formatApproxUsd(cmp.apiCostMonthly)} a month. This is an estimate.`,
@@ -64,29 +72,29 @@ export function describeAnswer(cmp: MonthlyComparison): Answer {
         tone: 'keep',
         headline: `Your ${plan} plan costs less than pay-as-you-go.`,
         detail: cmp.lowerBound
-          ? `At least ${formatAtLeastUsd(cmp.difference)} a month less. The real gap is bigger.`
-          : `About ${formatApproxUsd(cmp.difference)} a month less. ${estimate}`,
+          ? `At least ${formatAtLeastUsd(cmp.difference)} a month less. The real gap is bigger.${onDemand}`
+          : `About ${formatApproxUsd(cmp.difference)} a month less.${onDemand} ${estimate}`,
         caveats,
       };
     case 'switch':
       return {
         tone: 'switch',
         headline: `Pay-as-you-go would cost less than your ${plan} plan.`,
-        detail: `About ${formatApproxUsd(cmp.difference)} a month less. ${estimate}`,
+        detail: `About ${formatApproxUsd(cmp.difference)} a month less.${onDemand} ${estimate}`,
         caveats,
       };
     case 'tie':
       return {
         tone: 'tie',
         headline: 'Too close to call.',
-        detail: `Your ${plan} plan is ${formatUsd(cmp.planPrice)} a month. Pay-as-you-go would be about ${formatApproxUsd(cmp.apiCostMonthly)}.`,
+        detail: `${yourCost} Pay-as-you-go would be about ${formatApproxUsd(cmp.apiCostMonthly)}.`,
         caveats,
       };
     default:
       return {
         tone: 'unknown',
         headline: "We can't say yet.",
-        detail: `Pay-as-you-go would cost at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month. Your ${plan} plan is ${formatUsd(cmp.planPrice)}.`,
+        detail: `Pay-as-you-go would cost at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month. ${yourCost}`,
         caveats,
       };
   }

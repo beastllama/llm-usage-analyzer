@@ -14,7 +14,7 @@ import { buildAiQuestion, buildShareLine, copyText } from '../services/shareServ
 import { ESTIMATED_MODEL } from '../services/fileImport';
 import { withQuietDays } from '../services/dailyRows';
 import { PRODUCTS, PRODUCT_IDS, findPlan, planOrDefault, productOf, type ProductId } from '../services/products';
-import { formatAtLeastUsd, formatCount, formatDay, formatTokenNumber, formatUsd, parseDay, plain, shortModelName } from '../services/format';
+import { formatApproxUsd, formatAtLeastUsd, formatCount, formatDay, formatTokenNumber, formatUsd, parseDay, plain, shortModelName } from '../services/format';
 import { safeLocal } from '../services/safeStorage';
 import { exportToJSON, exportToCSV, exportToPDF } from '../services/exportService';
 import PlanComparison from './PlanComparison';
@@ -67,9 +67,14 @@ interface Notice {
 const PANEL_NAMES: Record<Exclude<Panel, null>, string> = { compare: 'Compare plans', pattern: 'Usage pattern' };
 
 const AnalysisDashboard: React.FC<DashboardProps> = ({ reports, onReset, isLiveData, live, onLiveRefresh }) => {
-  // Which report is shown below the overview
-  const [active, setActive] = useState(0);
-  const data = reports[Math.min(active, reports.length - 1)];
+  // Which report is shown below the overview, by its tool, so a refresh that adds or drops a tool keeps the same one
+  const keyOf = (r: UsageReport, i: number) => r.tool ?? r.product ?? `#${i}`;
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const found = activeKey === null ? -1 : reports.findIndex((r, i) => keyOf(r, i) === activeKey);
+  const active = found >= 0 ? found : 0;
+  const data = reports[active];
+  // Only a plan change is announced from the answer card. A tool switch moves focus there, which reads it already.
+  const [announceAnswer, setAnnounceAnswer] = useState(false);
   const product = productOf(data);
   const [chosenPlans, setChosenPlans] = useState(storedPlans);
   // Until the person picks a plan, the answer uses the product's usual plan, says so, and marks it as assumed in anything copied or saved
@@ -78,6 +83,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ reports, onReset, isLiveD
   const assumed = !chosen;
   const choosePlan = (name: string) => {
     if (!product || !findPlan(product, name)) return;
+    setAnnounceAnswer(true);
     setChosenPlans((all) => ({ ...all, [product.id]: name }));
     safeLocal.set(planStorageKey(product.id), name);
   };
@@ -227,7 +233,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ reports, onReset, isLiveD
 
   /** Show one tool's answer, and move focus to it so it is clear what changed. */
   const showReport = (index: number) => {
-    setActive(index);
+    setActiveKey(keyOf(reports[index], index));
+    setAnnounceAnswer(false);
     setPanel(null);
     setShowDetails(false);
     requestAnimationFrame(() => answerRef.current?.focus({ preventScroll: false }));
@@ -332,7 +339,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ reports, onReset, isLiveD
       {/* The answer: one card, one sentence, plain numbers */}
       <section ref={answerRef} tabIndex={-1} aria-labelledby="answer-title" className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 md:p-8 space-y-6 outline-none scroll-mt-24">
         {/* A live region, so a screen reader hears the answer change when the plan changes */}
-        <div aria-live="polite">
+        <div aria-live={announceAnswer ? 'polite' : 'off'}>
           <p className="text-xs uppercase tracking-wide text-slate-300">{reports.length > 1 ? `${toolName}: your answer` : 'Your answer'}</p>
           {comparable ? (
             <>
@@ -404,6 +411,12 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ reports, onReset, isLiveD
               <div className="bg-slate-900/50 rounded-xl p-4">
                 <div className="text-xs text-slate-300">Your plan</div>
                 <div className="text-3xl font-bold text-white">{formatUsd(cmp.planPrice)}<span className="text-base text-slate-300 font-normal">/mo</span></div>
+                {cmp.onDemandMonthly > 0 && (
+                  <div className="text-sm text-slate-200 mt-1">+ about {formatApproxUsd(cmp.onDemandMonthly)}/mo billed on demand{cmp.onDemandUnknown ? ', and more the export does not price' : ''}</div>
+                )}
+                {cmp.onDemandMonthly === 0 && cmp.onDemandUnknown && (
+                  <div className="text-sm text-slate-200 mt-1">+ on-demand charges the export does not price</div>
+                )}
               </div>
             )}
             <div className="bg-slate-900/50 rounded-xl p-4">

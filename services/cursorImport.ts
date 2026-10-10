@@ -6,7 +6,9 @@
 // real row checked, Total Tokens is the sum of the four token columns.
 // Models are Cursor's own labels ("auto", "composer-2.5", ...). A label is priced only when it is a model id with a
 // published price; "auto" names no model, so it is never priced.
+// Kind says whether the plan covered a row ("Included") or Cursor billed it on demand; Cost then gives the amount.
 import type { UsageReport } from '../types';
+import { billingKey } from './pricing';
 
 const REQUIRED = ['Date', 'Model', 'Input (w/ Cache Write)', 'Input (w/o Cache Write)', 'Cache Read', 'Output Tokens'];
 
@@ -49,7 +51,17 @@ function count(cell: string | undefined): number | null {
 }
 
 const localDay = (d: Date) =>
-  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  `${String(d.getFullYear()).padStart(4, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// Cursor's usage export did not exist before this, so an earlier date is a damaged row. A day ahead allows for time zones.
+const EARLIEST = Date.UTC(2023, 0, 1);
+const plausible = (d: Date) => !Number.isNaN(d.getTime()) && d.getTime() >= EARLIEST && d.getTime() <= Date.now() + 86_400_000;
+
+/** A cost cell as a number of dollars, or null when it is not one ("Included", "-", empty). */
+function dollars(cell: string | undefined): number | null {
+  const text = (cell ?? '').trim().replace(/^\$/, '');
+  return /^\d{1,9}(\.\d{1,6})?$/.test(text) ? Number(text) : null;
+}
 
 /** A model label as a table key. Kept short, and cleaned of anything that is not part of a name. */
 const label = (text: string): string => text.trim().slice(0, 100).replace(/[\u0000-\u001f\u007f-\u009f]/g, '') || 'unknown';
@@ -72,7 +84,8 @@ export function parseCursorCsv(text: string): CursorImport {
     period: { start: new Date().toISOString(), end: new Date().toISOString() },
     plan: { name: 'Not set', price_usd: 0, type: 'subscription' },
     usage: {
-      tokens: { input: 0, output: 0, cached: 0, by_model: {} },
+      // A dictionary with no inherited keys: a label like "constructor" or "__proto__" is just a label
+      tokens: { input: 0, output: 0, cached: 0, by_model: Object.create(null) },
       messages: { count: 0, by_day: [] },
       sessions: { count: 0 },
     },
@@ -82,18 +95,29 @@ export function parseCursorCsv(text: string): CursorImport {
   let last: Date | null = null;
   let skipped = 0;
   let bad = 0;
+  const onDemand = { usd: 0, rows: 0, rows_without_cost: 0 };
 
   for (const row of rows.slice(1)) {
     // Rows Cursor did not charge for (a failed request) are not usage anyone paid for
     if (col('Kind') >= 0 && /no charge/i.test(row[col('Kind')] ?? '')) { skipped++; continue; }
     const when = new Date((row[col('Date')] ?? '').trim());
+    const kind = col('Kind') >= 0 ? (row[col('Kind')] ?? '').trim() : '';
     const write = count(row[col('Input (w/ Cache Write)')]);
     const input = count(row[col('Input (w/o Cache Write)')]);
     const read = count(row[col('Cache Read')]);
     const output = count(row[col('Output Tokens')]);
-    if (Number.isNaN(when.getTime()) || write === null || input === null || read === null || output === null) { bad++; continue; }
+    if (!plausible(when) || write === null || input === null || read === null || output === null) { bad++; continue; }
 
-    const model = label(row[col('Model')] ?? '');
+    // Use the plan did not cover is billed on demand. The export's Cost column says how much, when it says.
+    if (kind && !/^included/i.test(kind)) {
+      onDemand.rows++;
+      const cost = col('Cost') >= 0 ? dollars(row[col('Cost')]) : null;
+      if (cost === null) onDemand.rows_without_cost++;
+      else onDemand.usd += cost;
+    }
+
+    // Long prompts and dated price changes are billed under their own price, as in the command's readers
+    const model = billingKey(label(row[col('Model')] ?? ''), input + read + write, when);
     const m = report.usage.tokens.by_model[model] ?? { input: 0, output: 0, cache_read: 0, cache_write: 0 };
     m.input += input;
     m.output += output;
@@ -123,6 +147,7 @@ export function parseCursorCsv(text: string): CursorImport {
   }
   // Rows that could not be read leave the totals short
   if (bad > 0) report.usage.incomplete = true;
+  if (onDemand.rows > 0) report.usage.on_demand = { ...onDemand, usd: Math.round(onDemand.usd * 1e6) / 1e6 };
   if (first && last) {
     report.period.start = first.toISOString();
     report.period.end = last.toISOString();

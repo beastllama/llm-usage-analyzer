@@ -14,7 +14,7 @@ import {
   trendProducts,
   MIN_DAYS_TO_COMPARE,
 } from '../services/trendService';
-import { PRODUCTS, type ProductId } from '../services/products';
+import { PRODUCTS, productOf, type ProductId } from '../services/products';
 import { formatApproxUsd, formatAtLeastUsd, formatDay, formatTokenNumber, formatUsd, plural } from '../services/format';
 import { CHART_START_SIZE } from './chartSize';
 
@@ -35,6 +35,8 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
   const recentDays = useMemo(() => getRecentDays(reports, 30, product), [reports, product]);
   const weekdayData = useMemo(() => getWeekdayHeatmap(reports, product), [reports, product]);
   const modelData = useMemo(() => getModelDistribution(reports, product), [reports, product]);
+  // This product's saved reports, for "using N of M"
+  const productReports = useMemo(() => reports.filter((r) => productOf(r.report)?.id === product).length, [reports, product]);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   // Land on the heading, so a keyboard or screen-reader user starts at the top of the new screen
@@ -84,8 +86,9 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
         <div>
           <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-bold text-white outline-none">Trends{product && products.length > 1 ? `: ${PRODUCTS[product].name}` : ''}</h1>
           <p className="text-slate-300 text-sm">
-            Using {trends.reportsUsed} of {plural(reports.length, 'saved report')}.
-            {trends.reportsUsed < reports.length ? ' Chat exports have no prices, and a report that overlaps a newer one is skipped, so no day counts twice.' : ''}
+            Using {trends.reportsUsed} of {plural(productReports, products.length > 1 ? `saved ${PRODUCTS[product].name} report` : 'saved report')}.
+            {trends.reportsUsed < productReports ? ' Chat exports have no prices, and a report that overlaps a newer one is skipped, so no day counts twice.' : ''}
+            {products.length > 1 ? ' Other products have their own button.' : ''}
           </p>
         </div>
       </div>
@@ -117,7 +120,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
           <div className="text-2xl font-bold text-white">{notPriced ? 'Not priced' : money(monthly)}</div>
           <div className="text-xs text-slate-300 mt-1">
             {minimum
-              ? 'A minimum at list prices: some replies were cut short in the log, or some usage has no known price, so the real cost is higher.'
+              ? 'A minimum at list prices: some replies were cut short in the log, some usage has no known price, or some logs could not be read, so the real cost is higher.'
               : 'An estimate at list prices, from your average day.'}
             {' '}Costs are spread across days by token count.
           </div>

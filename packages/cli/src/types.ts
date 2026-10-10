@@ -48,6 +48,11 @@ export interface UsageReport {
     };
     /** True when some logs could not be read (for example compressed files on an older Node), so the totals are a minimum. */
     incomplete?: boolean;
+    /**
+     * Charges beyond the plan that the tool's own export shows for this period (Cursor's on-demand use), in USD.
+     * `rows_without_cost` counts on-demand rows whose cost the export did not give, so the real amount is higher.
+     */
+    on_demand?: { usd: number; rows: number; rows_without_cost: number };
   };
 }
 

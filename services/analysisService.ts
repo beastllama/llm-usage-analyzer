@@ -43,8 +43,14 @@ export interface MonthlyComparison {
   /** True when the pay-as-you-go figure is a minimum (cut-short replies or unpriced models). */
   lowerBound: boolean;
   quality: EstimateQuality;
-  /** Absolute monthly difference between plan price and pay-as-you-go estimate. */
+  /** Absolute monthly difference between what was paid (plan plus on-demand) and the pay-as-you-go estimate. */
   difference: number;
+  /** On-demand charges beyond the plan that the tool's export shows (Cursor), scaled to 30 days. 0 when none. */
+  onDemandMonthly: number;
+  /** True when some on-demand use has no cost in the export, so what was paid is higher than shown. */
+  onDemandUnknown: boolean;
+  /** Plan price plus on-demand charges, per month: what the use really cost on the plan. */
+  paidMonthly: number;
 }
 
 export function calculateAnalysis(report: UsageReport, planName?: string): MonthlyComparison {
@@ -53,9 +59,17 @@ export function calculateAnalysis(report: UsageReport, planName?: string): Month
   const apiCostMonthly = cost * (30 / periodDays);
   const known = productOf(report);
   const product = known ?? PRODUCTS.claude;
-  const plan = planOrDefault(product, planName);
+  // A report from no known product is compared with no plan
+  const plan = known ? planOrDefault(known, planName) : null;
   const planPrice = plan?.price ?? 0;
   const quality = estimateQuality(report);
+  const onDemand = report.usage.on_demand;
+  const onDemandMonthly = (onDemand?.usd ?? 0) * (30 / periodDays);
+  const onDemandUnknown = (onDemand?.rows_without_cost ?? 0) > 0;
+  const paidMonthly = planPrice + onDemandMonthly;
+  let verdict = decide(paidMonthly, apiCostMonthly, quality.lowerBound);
+  // Part of what was paid is not known, so the plan cannot be shown to be the cheaper choice
+  if (onDemandUnknown && verdict !== 'switch') verdict = 'unknown';
 
   return {
     product,
@@ -70,10 +84,13 @@ export function calculateAnalysis(report: UsageReport, planName?: string): Month
     unpricedModels,
     // A report from no known product has no plans to compare with
     canJudge: known !== null && quality.pricedTokens > 0,
-    verdict: decide(planPrice, apiCostMonthly, quality.lowerBound),
+    verdict,
     lowerBound: quality.lowerBound,
     quality,
-    difference: Math.abs(planPrice - apiCostMonthly),
+    difference: Math.abs(paidMonthly - apiCostMonthly),
+    onDemandMonthly,
+    onDemandUnknown,
+    paidMonthly,
   };
 }
 
