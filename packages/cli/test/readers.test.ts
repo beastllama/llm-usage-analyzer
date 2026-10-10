@@ -247,3 +247,13 @@ test('codex: a compressed file that cannot be unpacked is skipped, and the total
   const { report } = await scanCodexUsage();
   assert.equal(report.usage.incomplete, true);
 });
+
+test('codex: an old session is still counted when a newer, unrelated session has the same numbers and a usage record', async () => {
+  const session = lines(fixture('codex-session.jsonl'));
+  // The same responses: once in an old file (no usage records) and once in a newer, separate session with records
+  rollout('rollout-old.jsonl', noRecords(session).map((l) => l.replaceAll('019a7c3e-5b2d-7f41-9c8e-2d4b6a1f0e93', '019a7c3e-0000-7f41-9c8e-2d4b6a1f0e93')).join('\n'));
+  rollout('rollout-new.jsonl', session.join('\n'));
+  const { report } = await scanCodexUsage();
+  assert.equal(report.usage.messages.count, 6);
+  assert.equal(report.usage.sessions.count, 2);
+});

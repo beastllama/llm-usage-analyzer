@@ -114,7 +114,7 @@ export async function scanCodexUsage(
   const records = new Map<string, Found>();   // by response_id
   // Responses found only through running totals (files from before usage records), keyed by [total, usage]
   const candidates: Array<{ key: string; file: string; copy: boolean; found: Found }> = [];
-  // Running totals that a usage record already covered, anywhere: a copy of one of these is not new usage
+  // Running totals that a usage record already covered, anywhere: a copy (in a fork or subagent file) of one of these is not new usage
   const coveredKeys = new Set<string>();
   let compressedSkipped = 0;
 
@@ -248,7 +248,9 @@ export async function scanCodexUsage(
   const copies = new Map<string, Found>();
   const fromTotals: Found[] = [];
   for (const c of candidates) {
-    if (coveredKeys.has(c.key)) { progress.duplicatesSkipped++; continue; }
+    // Only a copy can repeat a response a usage record already counted. A session's own line never does, even when an
+    // unrelated session happens to have the same numbers.
+    if (c.copy && coveredKeys.has(c.key)) { progress.duplicatesSkipped++; continue; }
     if (!c.copy) {
       const id = `${c.file}\u0000${c.key}`;
       if (ownSeen.has(id)) { progress.duplicatesSkipped++; continue; }
