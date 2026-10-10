@@ -2,7 +2,8 @@ import { StoredReport, TrendData, UsageTrend, UsageReport } from '../types';
 import { costByModel, tokenCost } from './pricing';
 import { spanDays } from './analysisService';
 import { estimateQuality } from './estimate';
-import { calendarDays, parseDay, shiftDay } from './format';
+import { calendarDays, parseDay, shiftDay, shortModelName } from './format';
+import { productOf, type ProductId } from './products';
 
 /** Cost of a report, summed by model at list prices. */
 function calculateReportCost(report: UsageReport): number {
@@ -37,20 +38,35 @@ export function pickNonOverlapping(reports: StoredReport[]): StoredReport[] {
 /** True when some of the report's usage has a price. A claude.ai chat export has none, so it cannot show a cost trend. */
 export const hasPricedUsage = (stored: StoredReport): boolean => estimateQuality(stored.report).pricedTokens > 0;
 
+const productId = (stored: StoredReport): ProductId | null => productOf(stored.report)?.id ?? null;
+
+/** The products that have saved reports with prices, the one with the most reports first. */
+export function trendProducts(all: StoredReport[]): ProductId[] {
+  const counts = new Map<ProductId, number>();
+  for (const stored of all.filter(hasPricedUsage)) {
+    const id = productId(stored);
+    if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+}
+
 /**
- * The saved reports that Trends uses: only reports with priced usage, and no report that overlaps a newer one.
+ * The saved reports that Trends uses: one product's reports (two tools can cover the same days, and both count),
+ * only reports with priced usage, and no report that overlaps a newer one of the same product.
  * (A chat export and a Claude Code report can cover the same days. Only the Claude Code one has prices.)
+ * Without a product, the product with the most saved reports is used.
  */
-export function trendReports(all: StoredReport[]): StoredReport[] {
-  return pickNonOverlapping(all.filter(hasPricedUsage));
+export function trendReports(all: StoredReport[], product?: ProductId): StoredReport[] {
+  const id = product ?? trendProducts(all)[0];
+  return pickNonOverlapping(all.filter((s) => hasPricedUsage(s) && productId(s) === id));
 }
 
 /**
  * Monthly totals. Each report's cost is split across its days by token share,
  * so a report that spans two months is split between them.
  */
-export function calculateMonthlyTrends(allReports: StoredReport[]): TrendData[] {
-  const reports = trendReports(allReports);
+export function calculateMonthlyTrends(allReports: StoredReport[], product?: ProductId): TrendData[] {
+  const reports = trendReports(allReports, product);
   const months = new Map<string, TrendData & { reportIds: Set<string> }>();
 
   const bucket = (monthKey: string) => {
@@ -107,11 +123,11 @@ export const MIN_DAYS_TO_COMPARE = 20;
  * Calculate usage trend analysis.
  * percentChange is null unless the latest month and the month right before it both have enough days to compare fairly.
  */
-export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | null {
-  const reports = trendReports(allReports);
+export function analyzeUsageTrends(allReports: StoredReport[], product?: ProductId): UsageTrend | null {
+  const reports = trendReports(allReports, product);
   if (reports.length === 0) return null;
 
-  const monthlyData = calculateMonthlyTrends(reports);
+  const monthlyData = calculateMonthlyTrends(reports, product);
   if (monthlyData.length === 0) return null;
 
   let percentChange: number | null = null;
@@ -145,13 +161,13 @@ export function analyzeUsageTrends(allReports: StoredReport[]): UsageTrend | nul
 /**
  * Get daily usage breakdown across all reports
  */
-export function getDailyBreakdown(allReports: StoredReport[]): Array<{
+export function getDailyBreakdown(allReports: StoredReport[], product?: ProductId): Array<{
   date: string;
   tokens: number;
   cost: number;
   messages: number;
 }> {
-  const reports = trendReports(allReports);
+  const reports = trendReports(allReports, product);
 
   const dayMap = new Map<string, { tokens: number; cost: number; messages: number }>();
 
@@ -182,8 +198,8 @@ export function getDailyBreakdown(allReports: StoredReport[]): Array<{
  * The last `count` calendar days, ending on the latest day that has data. Quiet days are there as zero,
  * so a chart of "the last 30 days" really covers 30 days and not the last 30 days with activity.
  */
-export function getRecentDays(allReports: StoredReport[], count = 30): ReturnType<typeof getDailyBreakdown> {
-  const rows = getDailyBreakdown(allReports);
+export function getRecentDays(allReports: StoredReport[], count = 30, product?: ProductId): ReturnType<typeof getDailyBreakdown> {
+  const rows = getDailyBreakdown(allReports, product);
   if (rows.length === 0) return [];
   const end = rows[rows.length - 1].date;
   // Never reach back past the first day with data: before that, nothing is known, which is not the same as nothing happened
@@ -197,12 +213,12 @@ export function getRecentDays(allReports: StoredReport[], count = 30): ReturnTyp
 /**
  * Get usage heatmap by day of week
  */
-export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
+export function getWeekdayHeatmap(allReports: StoredReport[], product?: ProductId): Array<{
   day: string;
   avgTokens: number;
   avgMessages: number;
 }> {
-  const reports = trendReports(allReports);
+  const reports = trendReports(allReports, product);
 
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const dayStats = dayNames.map(() => ({ totalTokens: 0, totalMessages: 0, count: 0 }));
@@ -230,13 +246,13 @@ export function getWeekdayHeatmap(allReports: StoredReport[]): Array<{
  * Calculate model usage distribution across all reports.
  * Uses a Map so model names like "__proto__" are safe keys.
  */
-export function getModelDistribution(allReports: StoredReport[]): Array<{
+export function getModelDistribution(allReports: StoredReport[], product?: ProductId): Array<{
   model: string;
   tokens: number;
   cost: number;
   percentage: number;
 }> {
-  const reports = trendReports(allReports);
+  const reports = trendReports(allReports, product);
 
   const modelStats = new Map<string, { input: number; output: number; cost: number }>();
   let totalTokens = 0;
@@ -256,7 +272,7 @@ export function getModelDistribution(allReports: StoredReport[]): Array<{
     .map(([model, s]) => {
       const modelTokens = s.input + s.output;
       return {
-        model: model.replace('claude-', ''),
+        model: shortModelName(model),
         tokens: modelTokens,
         cost: s.cost,
         percentage: totalTokens > 0 ? (modelTokens / totalTokens) * 100 : 0,

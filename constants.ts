@@ -3,6 +3,8 @@ import { UsageReport } from "./types";
 // Demo data. Totals are the sum of the daily rows, and the model split matches the totals.
 export const MOCK_DATA: UsageReport = {
   provider: "anthropic",
+  product: "claude",
+  tool: "Claude Code",
   source: "demo",
   // The days below are calendar days on the viewer's clock, so the period is too (not UTC instants)
   period: {
@@ -50,3 +52,6 @@ export const MOCK_DATA: UsageReport = {
     },
   },
 };
+
+/** What "Try the demo" shows: one report per tool, like a real scan. */
+export const DEMO_REPORTS: UsageReport[] = [MOCK_DATA];

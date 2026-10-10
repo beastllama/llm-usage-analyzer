@@ -31,13 +31,18 @@ const report = (start: string, end: string) => {
   return r;
 };
 
-test('a saved report comes back, named by the dates it covers', () => {
+test('a saved report comes back, named by its tool and the dates it covers', () => {
   const saved = storageService.saveReport(report(new Date(2026, 8, 1).toISOString(), new Date(2026, 8, 15).toISOString()));
   assert.ok(saved);
-  assert.equal(saved.name, 'Sep 1, 2026 to Sep 15, 2026');
+  assert.equal(saved.name, 'Claude Code · Sep 1, 2026 to Sep 15, 2026');
   const all = storageService.getReports();
   assert.equal(all.length, 1);
   assert.equal(all[0].id, saved.id);
+});
+
+test('a report saved before tools were named is named by its dates only', () => {
+  const { tool: _tool, ...old } = report(new Date(2026, 8, 1).toISOString(), new Date(2026, 8, 15).toISOString());
+  assert.equal(storageService.generateReportName(old), 'Sep 1, 2026 to Sep 15, 2026');
 });
 
 test('two reports from the same month get different names', () => {

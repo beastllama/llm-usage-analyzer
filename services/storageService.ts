@@ -90,15 +90,18 @@ export const storageService = {
     safeLocal.remove(UNREADABLE_KEY);
   },
 
-  /** "Sep 1, 2026 to Sep 15, 2026". Two reports from the same month still get different names. */
+  /** "Codex CLI · Sep 1, 2026 to Sep 15, 2026". Two reports from the same month still get different names. */
   generateReportName(report: UsageReport): string {
-    return `${formatDate(report.period.start)} to ${formatDate(report.period.end)}`;
+    const dates = `${formatDate(report.period.start)} to ${formatDate(report.period.end)}`;
+    return report.tool ? `${report.tool} · ${dates}` : dates;
   },
 
   /** A saved report that covers the same period, if there is one. */
   findDuplicateReport(report: UsageReport): StoredReport | undefined {
     return this.getReports().find((stored) =>
       stored.report.provider === report.provider &&
+      stored.report.product === report.product &&
+      stored.report.tool === report.tool &&
       stored.report.period.start === report.period.start &&
       stored.report.period.end === report.period.end,
     );

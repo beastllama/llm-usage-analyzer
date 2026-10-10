@@ -1,7 +1,9 @@
-// Single source of truth for prices and plans.
-// Prices are USD per 1M tokens, from Anthropic's public pages, checked on PRICES_CHECKED:
-//   API prices and cache multipliers: https://platform.claude.com/docs/en/about-claude/pricing
-//   Plan prices (monthly, before tax): https://claude.com/pricing
+// Single source of truth for model prices. Plans are in products.ts.
+// Prices are USD per 1M tokens at each maker's standard (not batch, not priority/fast) API rate, from their own
+// pages, checked on PRICES_CHECKED:
+//   Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
+//   OpenAI:    https://developers.openai.com/api/docs/pricing (and the model pages it links)
+//   Google:    https://ai.google.dev/gemini-api/docs/pricing (paid tier)
 // Anything not listed here is shown as "unpriced" instead of guessed.
 
 export interface ModelPrice {
@@ -12,8 +14,8 @@ export interface ModelPrice {
   cacheWrite1h: number; // 1-hour cache writes
 }
 
-/** The day the prices below were last compared with Anthropic's pages. Shown to the user. */
-export const PRICES_CHECKED = '2026-10-09';
+/** The day the prices below were last compared with the makers' pages. Shown to the user. */
+export const PRICES_CHECKED = '2026-10-10';
 
 export interface TokenCounts {
   input: number;
@@ -52,6 +54,27 @@ const claude = (input: number, output: number, readMultiplier = 0.1): ModelPrice
   cacheWrite1h: input * 2,
 });
 
+/**
+ * An OpenAI price. A model with no published cached-input price ("–" on the pricing page) has no discount, so cached
+ * tokens are billed as ordinary input. A model with no published cache-write price bills cache writes as input.
+ */
+const openai = (input: number, cached: number | null, output: number, cacheWrite?: number): ModelPrice => ({
+  input,
+  output,
+  cacheRead: cached ?? input,
+  cacheWrite: cacheWrite ?? input,
+  cacheWrite1h: cacheWrite ?? input,
+});
+
+/** A Gemini price. Gemini logs no cache writes; caching is priced per cached token read. */
+const gemini = (input: number, output: number, cached: number): ModelPrice => ({
+  input,
+  output,
+  cacheRead: cached,
+  cacheWrite: input,
+  cacheWrite1h: input,
+});
+
 // null means the family is known but no verified price is, so the model is reported as unpriced.
 const PRICES: Record<string, ModelPrice | null> = {
   'claude-fable-5-1': claude(10, 50, 0.025),
@@ -80,17 +103,138 @@ const PRICES: Record<string, ModelPrice | null> = {
   'claude-haiku-4-5': claude(1, 5),
   // Retired model, last listed price.
   'claude-3-5-haiku': claude(0.8, 4),
+
+  // ---- OpenAI (Standard tier). "cached input" is the cache-read price. Reasoning tokens are billed as output.
+  // Cache writes cost 1.25x input on the GPT-6 and GPT-5.6 families; older models list no cache-write price.
+  // Prompts over 272K input tokens are billed at 2x input and cache rates and 1.5x output for the whole request:
+  // those requests are filed under the "-long-prompt" keys (see LONG_PROMPT_RATES).
+  'gpt-6.1-sol': openai(2, 0.1, 10, 2.5),
+  'gpt-6.1-sol-long-prompt': openai(4, 0.2, 15, 5),
+  'gpt-6-astra': openai(10, 1, 50, 12.5),
+  'gpt-6-astra-long-prompt': openai(20, 2, 75, 25),
+  'gpt-6-sol': openai(2, 0.2, 10, 2.5),
+  'gpt-6-sol-long-prompt': openai(4, 0.4, 15, 5),
+  'gpt-6-luna': openai(0.1, 0.01, 0.5, 0.125),
+  'gpt-6-luna-long-prompt': openai(0.2, 0.02, 0.75, 0.25),
+  // Promotional price, "available at least through November 21, 2026"
+  'gpt-5.6-sol': openai(4, 0.4, 20, 5),
+  'gpt-5.6-sol-long-prompt': openai(8, 0.8, 30, 10),
+  'gpt-5.6-terra': openai(2, 0.2, 12, 2.5),
+  'gpt-5.6-terra-long-prompt': openai(4, 0.4, 18, 5),
+  'gpt-5.6-luna': openai(0.2, 0.02, 1.2, 0.25),
+  'gpt-5.6-luna-long-prompt': openai(0.4, 0.04, 1.8, 0.5),
+  'gpt-5.6-cyber': openai(12.5, 1.25, 75, 15.625),
+  'gpt-5.5': openai(5, 0.5, 30),
+  'gpt-5.5-long-prompt': openai(10, 1, 45),
+  'gpt-5.5-pro': openai(30, null, 180),
+  'gpt-5.5-pro-long-prompt': openai(60, null, 270),
+  'gpt-5.5-cyber': openai(12.5, 1.25, 75),
+  'gpt-5.4': openai(2.5, 0.25, 15),
+  'gpt-5.4-long-prompt': openai(5, 0.5, 22.5),
+  'gpt-5.4-mini': openai(0.75, 0.075, 4.5),
+  'gpt-5.4-nano': openai(0.2, 0.02, 1.25),
+  'gpt-5.4-pro': openai(30, null, 180),
+  'gpt-5.4-pro-long-prompt': openai(60, null, 270),
+  'gpt-5.3-codex': openai(1.75, 0.175, 14),
+  'gpt-5.2': openai(1.75, 0.175, 14),
+  'gpt-5.2-pro': openai(21, null, 168),
+  // Shut down on the API, still in old logs. Last listed price.
+  'gpt-5.2-codex': openai(1.75, 0.175, 14),
+  'gpt-5.1-codex-max': openai(1.25, 0.125, 10),
+  'gpt-5.1-codex-mini': openai(0.25, 0.025, 2),
+  'gpt-5.1-codex': openai(1.25, 0.125, 10),
+  'gpt-5-codex': openai(1.25, 0.125, 10),
+  'codex-mini-latest': openai(1.5, 0.375, 6),
+  'gpt-5.1': openai(1.25, 0.125, 10),
+  'gpt-5': openai(1.25, 0.125, 10),
+  'gpt-5-mini': openai(0.25, 0.025, 2),
+  'gpt-5-nano': openai(0.05, 0.005, 0.4),
+  'gpt-5-pro': openai(15, null, 120),
+  'gpt-4.1': openai(2, 0.5, 8),
+  'gpt-4.1-mini': openai(0.4, 0.1, 1.6),
+  'gpt-4.1-nano': openai(0.1, 0.025, 0.4),
+  'gpt-4o': openai(2.5, 1.25, 10),
+  // An older snapshot with its own price. Listed so it is not priced as today's gpt-4o.
+  'gpt-4o-2024-05-13': openai(5, null, 15),
+  'gpt-4o-mini': openai(0.15, 0.075, 0.6),
+  'o3-pro': openai(20, null, 80),
+  'o3': openai(2, 0.5, 8),
+  'o4-mini': openai(1.1, 0.275, 4.4),
+  'o3-mini': openai(1.1, 0.55, 4.4),
+  'o1': openai(15, 7.5, 60),
+  'o1-pro': openai(150, null, 600),
+
+  // ---- Google Gemini API (paid tier). Output includes thinking tokens. "cacheRead" is the context-caching price
+  // per 1M cached tokens; cache storage (per hour) is not in the logs, so it is not counted.
+  // The Pro models cost more when a prompt is over 200K tokens: filed under "-long-prompt" (see LONG_PROMPT_RATES).
+  'gemini-3.8-flash': gemini(0.75, 3.75, 0.075),
+  'gemini-3.6-flash': gemini(0.75, 3.75, 0.075),
+  // From January 1, 2027 these two cost twice as much. Requests from that day on are filed under these keys.
+  'gemini-3.8-flash-from-2027': gemini(1.5, 7.5, 0.15),
+  'gemini-3.6-flash-from-2027': gemini(1.5, 7.5, 0.15),
+  'gemini-3.5-flash-lite': gemini(0.3, 2.5, 0.03),
+  'gemini-3.1-flash-lite': gemini(0.25, 1.5, 0.025),
+  'gemini-3.1-pro-preview-customtools': gemini(2, 12, 0.2),
+  'gemini-3.1-pro-preview-customtools-long-prompt': gemini(4, 18, 0.4),
+  'gemini-3.1-pro-preview': gemini(2, 12, 0.2),
+  'gemini-3.1-pro-preview-long-prompt': gemini(4, 18, 0.4),
+  'gemini-3-flash-preview': gemini(0.5, 3, 0.05),
+  'gemini-2.5-pro': gemini(1.25, 10, 0.125),
+  'gemini-2.5-pro-long-prompt': gemini(2.5, 15, 0.25),
+  'gemini-2.5-flash': gemini(0.3, 2.5, 0.03),
+  'gemini-2.5-flash-lite': gemini(0.1, 0.4, 0.01),
 };
 
-// A model id is a table key, optionally followed by a date (-20250929), "-latest", or a context tag like [1m].
-// Anything else, for example a newer "claude-opus-5-6", is unpriced. It is not guessed to cost the same as an older model.
-const ID_SUFFIX = /^(-\d{8})?(-latest)?(\[[a-z0-9]+\])?$/;
+// A model id is a table key, optionally followed by a date (-20250929 or -2025-09-29), "-latest", or a context tag
+// like [1m]. Anything else, for example a newer "claude-opus-5-6" or "gpt-6.2-sol", is unpriced. It is not guessed
+// to cost the same as an older model.
+const ID_SUFFIX = /^(-\d{8}|-\d{4}-\d{2}-\d{2})?(-latest)?(\[[a-z0-9]+\])?$/;
+
+// Longest key first, so "gpt-4o-2024-05-13" finds its own price before "gpt-4o" plus a date
+const KEYS_LONGEST_FIRST = Object.keys(PRICES).sort((a, b) => b.length - a.length);
 
 export function priceFor(model: string): ModelPrice | null {
-  for (const key of Object.keys(PRICES)) {
+  if (Object.prototype.hasOwnProperty.call(PRICES, model)) return PRICES[model];
+  for (const key of KEYS_LONGEST_FIRST) {
     if (model.startsWith(key) && ID_SUFFIX.test(model.slice(key.length))) return PRICES[key];
   }
   return null;
+}
+
+/**
+ * Models that bill a whole request at a higher rate when its prompt is over a size: the model, the prompt size
+ * (input plus cached tokens) above which the higher rate applies, and the price-table key of the higher rate.
+ */
+const LONG_PROMPT_RATES: Array<{ model: string; over: number; key: string }> = [
+  { model: 'claude-haiku-5-5', over: 100_000, key: 'claude-haiku-5-5-long-prompt' },
+  ...['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+    'gpt-5.5', 'gpt-5.5-pro', 'gpt-5.4', 'gpt-5.4-pro']
+    .map((model) => ({ model, over: 272_000, key: `${model}-long-prompt` })),
+  ...['gemini-3.1-pro-preview-customtools', 'gemini-3.1-pro-preview', 'gemini-2.5-pro']
+    .map((model) => ({ model, over: 200_000, key: `${model}-long-prompt` })),
+];
+
+/** Prices that change on a known day: the model, the day (local midnight), and the key of the new price. */
+const PRICE_CHANGES: Array<{ model: string; from: Date; key: string }> = [
+  { model: 'gemini-3.8-flash', from: new Date(2027, 0, 1), key: 'gemini-3.8-flash-from-2027' },
+  { model: 'gemini-3.6-flash', from: new Date(2027, 0, 1), key: 'gemini-3.6-flash-from-2027' },
+];
+
+/**
+ * The price-table key one request is billed under. A request over a long-prompt threshold is filed under the higher
+ * rate. Only a model the table knows as that model is moved: a name that merely starts the same is not guessed at.
+ */
+export function billingKey(model: string, promptTokens: number, when?: Date | null): string {
+  const price = priceFor(model);
+  if (!price) return model;
+  for (const change of PRICE_CHANGES) {
+    // A request with no time cannot be placed after a price change, so it keeps the price that applies today
+    if (when && when >= change.from && price === priceFor(change.model)) return change.key;
+  }
+  for (const rate of LONG_PROMPT_RATES) {
+    if (promptTokens > rate.over && price === priceFor(rate.model)) return rate.key;
+  }
+  return model;
 }
 
 /** USD cost for one model's token counts. priced=false means no price is known, so cost is 0. */

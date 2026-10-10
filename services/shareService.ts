@@ -20,7 +20,7 @@ const apiPerMonth = (cmp: MonthlyComparison): string =>
  */
 export function buildAiQuestion(report: UsageReport, cmp: MonthlyComparison, pattern: UsagePattern, assumed = false): string {
   return [
-    'I want to decide between a Claude subscription and pay-as-you-go API use. Please answer in 3 short sentences, in plain words.',
+    `I want to decide between a ${cmp.product.name} subscription and pay-as-you-go API use. Please answer in 3 short sentences, in plain words.`,
     '',
     `My plan: ${planLabel(cmp.planKey, assumed)}, ${formatUsd(cmp.planPrice)} per month.`,
     `The same usage at pay-as-you-go list prices: ${apiPerMonth(cmp)} per month.`,

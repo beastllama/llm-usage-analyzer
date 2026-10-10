@@ -24,3 +24,22 @@ test('the CLI estimate rules are identical to the web app estimate rules', () =>
     'run "npm run sync:pricing": packages/cli/src/estimate.ts must match services/estimate.ts',
   );
 });
+
+test('the CLI plans are identical to the web app plans', () => {
+  assert.equal(
+    readFileSync('packages/cli/src/products.ts', 'utf8'),
+    readFileSync('services/products.ts', 'utf8'),
+    'run "npm run sync:pricing": packages/cli/src/products.ts must match services/products.ts',
+  );
+});
+
+test('the product list in products.ts is the same as in both types.ts files', () => {
+  const ids = (file: string) => {
+    const m = /export type ProductId = ([^;]+);/.exec(readFileSync(file, 'utf8'));
+    return m ? m[1].split('|').map((s) => s.trim()).sort() : null;
+  };
+  const expected = ids('services/products.ts');
+  assert.ok(expected && expected.length > 0);
+  assert.deepEqual(ids('types.ts'), expected);
+  assert.deepEqual(ids('packages/cli/src/types.ts'), expected);
+});

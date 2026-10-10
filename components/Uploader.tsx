@@ -16,7 +16,7 @@ export interface StartNotice {
 }
 
 interface UploaderProps {
-  onDataLoaded: (data: UsageReport, fromLiveServer?: boolean) => void;
+  onDataLoaded: (reports: UsageReport[], fromLiveServer?: boolean) => void;
   onLoadDemo: () => void;
   /** A message to show on arrival, for example when the local history could not be read. */
   initialNotice?: StartNotice | null;
@@ -91,7 +91,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       setNotice({ kind: 'error', text: result.error });
       return;
     }
-    onDataLoaded(result.report);
+    onDataLoaded(result.reports);
   };
 
   // A file dropped anywhere on the page opens here. It never opens in a new browser tab.
@@ -122,7 +122,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       setNotice({ kind: result.reason === 'no-history' ? 'no-history' : 'error', text: result.message });
       return;
     }
-    onDataLoaded(result.report, true);
+    onDataLoaded(result.reports, true);
   };
 
   const copyCommand = async () => {
@@ -201,7 +201,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
           tabIndex={-1}
           className="text-4xl md:text-5xl font-bold tracking-tight text-white outline-none"
         >
-          See if a Claude plan beats paying per use.
+          See if your AI plans beat paying per use.
         </h1>
         <p className="text-lg text-slate-300">Runs on your computer. No login. No API key.</p>
       </header>
@@ -227,9 +227,9 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
             <div className="flex items-center gap-3 flex-wrap">
               <div className="p-2.5 rounded-xl bg-indigo-500/15 text-indigo-300"><Terminal className="w-6 h-6" aria-hidden="true" /></div>
               <div className="flex-1 min-w-[10rem]">
-                <h2 id="cc-title" className="text-xl font-bold text-white">I use Claude Code</h2>
+                <h2 id="cc-title" className="text-xl font-bold text-white">I use Claude Code, Codex CLI or Gemini CLI</h2>
                 <p className="text-sm text-slate-300">
-                  {servedByCli ? 'Reads the history Claude Code keeps on this computer.' : 'Run one command. Your browser opens with your answer.'}
+                  {servedByCli ? 'Reads the history these tools keep on this computer.' : 'Run one command. Your browser opens with your answer for each tool.'}
                 </p>
               </div>
               {!noHistory && <span className="text-xs font-semibold text-indigo-200 bg-indigo-500/15 px-2.5 py-1 rounded-full">Recommended</span>}
@@ -263,7 +263,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
                   ? <><Loader2 className="w-5 h-5 motion-safe:animate-spin" aria-hidden="true" /> Reading…</>
                   : <><BarChart3 className="w-5 h-5" aria-hidden="true" />
                       {servedByCli
-                        ? (noHistory ? 'Look again' : 'Read my Claude Code history')
+                        ? (noHistory ? 'Look again' : 'Read my history')
                         : 'Found the analyzer on this computer. Load my data'}</>}
               </button>
             )}
@@ -328,7 +328,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       {view === 'file' && dropZone('Choose the usage_report.json made by `llm-usage-analyzer scan`. It stays in your browser.')}
 
       <p className="text-xs text-slate-400 text-center">
-        Independent project. Not affiliated with Anthropic.
+        Independent project. Not affiliated with Anthropic, OpenAI, Google or Cursor.
       </p>
     </div>
   );

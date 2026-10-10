@@ -2,7 +2,7 @@
 // all use this, so they can never disagree about what the numbers allow us to say.
 import type { MonthlyComparison } from './analysisService';
 import { MINIMUM_SHARE } from './estimate';
-import { formatApproxUsd, formatAtLeastUsd, formatUsd, plain } from './format';
+import { formatApproxUsd, formatAtLeastUsd, formatUsd, shortModelName } from './format';
 
 /** A plan as it should read in copied text and files: marked when the person never said which plan they pay for. */
 export const planLabel = (plan: string, assumed: boolean): string => (assumed ? `${plan} (assumed)` : plan);
@@ -14,12 +14,12 @@ export interface Answer {
   detail: string;
   /** Plain sentences about what makes the answer weaker. Empty when there is nothing to warn about. */
   caveats: string[];
-  tone: 'keep' | 'switch' | 'tie' | 'unknown';
+  tone: 'keep' | 'switch' | 'tie' | 'unknown' | 'payg';
 }
 
 /** "A, B and C", with at most three names. */
 function nameList(names: string[]): string {
-  const clean = names.map((n) => plain(n).replace(/^claude-/, ''));
+  const clean = names.map((n) => shortModelName(n));
   if (clean.length <= 3) return clean.length > 1 ? `${clean.slice(0, -1).join(', ')} and ${clean[clean.length - 1]}` : clean[0] ?? '';
   return `${clean.slice(0, 3).join(', ')} and ${clean.length - 3} more`;
 }
@@ -42,7 +42,18 @@ export function describeCaveats(cmp: MonthlyComparison): string[] {
 export function describeAnswer(cmp: MonthlyComparison): Answer {
   const caveats = describeCaveats(cmp);
   const plan = cmp.planKey;
-  const estimate = "This is an estimate from Anthropic's published prices.";
+  const estimate = `This is an estimate from ${cmp.product.pricesFrom} published prices.`;
+
+  if (cmp.payAsYouGo) {
+    return {
+      tone: 'payg',
+      headline: `${cmp.product.tools} is pay-as-you-go. No plan covers it.`,
+      detail: cmp.lowerBound
+        ? `At ${cmp.product.pricesFrom} list prices, your use costs at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month.`
+        : `At ${cmp.product.pricesFrom} list prices, your use costs about ${formatApproxUsd(cmp.apiCostMonthly)} a month. ${estimate}`,
+      caveats,
+    };
+  }
 
   switch (cmp.verdict) {
     case 'keep':

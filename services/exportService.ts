@@ -1,12 +1,14 @@
 import { UsageReport } from '../types';
-import { tokenCost, PlanKey, PRICES_CHECKED } from './pricing';
+import { tokenCost, PRICES_CHECKED } from './pricing';
+import { productOf } from './products';
 import { calculateAnalysis } from './analysisService';
 import { describeAnswer, planLabel } from './answer';
 import { formatCount, formatUsd, plain } from './format';
 
-const ESTIMATE_NOTE =
+/** What the numbers are, and what they leave out. The limits sentence is the report's product's own. */
+const estimateNote = (report: UsageReport): string =>
   `Estimates at standard list prices, checked ${PRICES_CHECKED}. Costs include cached text. Output counts in local logs can be too low. ` +
-  'Plans also differ in how much you can use, and Anthropic does not publish the limits.';
+  (productOf(report)?.limitsNote ?? 'Plans also differ in how much you can use.');
 
 /** `assumed` marks a plan the person never chose, so a file does not state it as fact. */
 export interface ExportOptions {
@@ -17,7 +19,7 @@ export interface ExportOptions {
 const DEMO_NOTE = 'Sample data, not real usage.';
 
 /** The pay-as-you-go cost of the period as text: "$12.34", "at least $12.34", or "not priced". */
-function costText(report: UsageReport, plan: PlanKey): string {
+function costText(report: UsageReport, plan: string): string {
   const cmp = calculateAnalysis(report, plan);
   if (!cmp.canJudge) return 'not priced';
   return `${cmp.lowerBound ? 'at least ' : ''}${formatUsd(cmp.apiCostPeriod)}`;
@@ -31,29 +33,30 @@ export function exportToJSON(report: UsageReport, filename?: string): string {
 }
 
 /** Export a report as a CSV file that opens in a spreadsheet. */
-export function exportToCSV(report: UsageReport, plan: PlanKey, options: ExportOptions = {}): string {
+export function exportToCSV(report: UsageReport, plan: string, options: ExportOptions = {}): string {
   const name = options.filename || generateFilename('csv');
   downloadFile(generateCSV(report, plan, options.assumed ?? false), name, 'text/csv');
   return name;
 }
 
 /** The text of the CSV file. */
-export function generateCSV(report: UsageReport, plan: PlanKey, assumed = false): string {
+export function generateCSV(report: UsageReport, plan: string, assumed = false): string {
   const lines: string[] = [];
   const cmp = calculateAnalysis(report, plan);
   const answer = describeAnswer(cmp);
 
   lines.push('LLM Usage Report');
   if (report.source === 'demo') lines.push(DEMO_NOTE);
+  if (report.tool) lines.push(`Tool,${csvCell(report.tool)}`);
   lines.push(`Period Start,${csvCell(report.period.start)}`);
   lines.push(`Period End,${csvCell(report.period.end)}`);
-  lines.push(`Plan,${csvCell(planLabel(plan, assumed))}`);
+  lines.push(`Plan,${csvCell(cmp.payAsYouGo ? 'None (pay-as-you-go)' : planLabel(cmp.planKey, assumed))}`);
   if (cmp.canJudge) {
     lines.push(`Answer,${csvCell(answer.headline)}`);
     lines.push(`Detail,${csvCell(answer.detail)}`);
     for (const caveat of answer.caveats) lines.push(`Note,${csvCell(caveat)}`);
   }
-  lines.push(csvCell(ESTIMATE_NOTE));
+  lines.push(csvCell(estimateNote(report)));
   lines.push('');
 
   lines.push('SUMMARY');
@@ -91,7 +94,7 @@ export function generateCSV(report: UsageReport, plan: PlanKey, assumed = false)
 }
 
 /** Open a printable page. The browser's print dialog can save it as a PDF. */
-export function exportToPDF(report: UsageReport, plan: PlanKey, assumed = false): void {
+export function exportToPDF(report: UsageReport, plan: string, assumed = false): void {
   const html = generatePDFHTML(report, plan, assumed);
 
   // A blob page opened with noopener cannot reach the app window
@@ -101,7 +104,7 @@ export function exportToPDF(report: UsageReport, plan: PlanKey, assumed = false)
 }
 
 /** Generate HTML for the printable page. Every string that came from a file is cleaned and escaped. */
-export function generatePDFHTML(report: UsageReport, plan: PlanKey, assumed = false): string {
+export function generatePDFHTML(report: UsageReport, plan: string, assumed = false): string {
   const cmp = calculateAnalysis(report, plan);
   const answer = describeAnswer(cmp);
   const totalTokens = report.usage.tokens.input + report.usage.tokens.output;
@@ -129,7 +132,7 @@ export function generatePDFHTML(report: UsageReport, plan: PlanKey, assumed = fa
 
   const answerBlock = cmp.canJudge ? `
   <div class="answer">
-    <div class="stat-label">Your answer (${escapeHtml(planLabel(plan, assumed))})</div>
+    <div class="stat-label">Your answer (${escapeHtml(cmp.payAsYouGo ? 'pay-as-you-go' : planLabel(cmp.planKey, assumed))})</div>
     <div class="answer-headline">${escapeHtml(answer.headline)}</div>
     <div>${escapeHtml(answer.detail)}</div>
     ${answer.caveats.map((c) => `<div class="caveat">${escapeHtml(c)}</div>`).join('')}
@@ -176,7 +179,7 @@ export function generatePDFHTML(report: UsageReport, plan: PlanKey, assumed = fa
   <p class="hint">To save this as a PDF, print the page (Ctrl+P, or Cmd+P on a Mac) and choose "Save as PDF".</p>
   <div class="header">
     <h1>LLM Usage Report</h1>
-    <p class="header-meta">${periodStart} to ${periodEnd}${report.source === 'demo' ? ' • ' + DEMO_NOTE : ''}</p>
+    <p class="header-meta">${report.tool ? escapeHtml(plain(report.tool)) + ' • ' : ''}${periodStart} to ${periodEnd}${report.source === 'demo' ? ' • ' + DEMO_NOTE : ''}</p>
   </div>
   ${answerBlock}
   <div class="grid">
@@ -227,9 +230,9 @@ export function generatePDFHTML(report: UsageReport, plan: PlanKey, assumed = fa
     </tbody>
   </table>` : ''}
 
-  <p class="note">${escapeHtml(ESTIMATE_NOTE)}</p>
+  <p class="note">${escapeHtml(estimateNote(report))}</p>
 
-  <div class="footer">Made by LLM Usage Analyzer on ${escapeHtml(new Date().toLocaleString())}. Unofficial: not affiliated with Anthropic.</div>
+  <div class="footer">Made by LLM Usage Analyzer on ${escapeHtml(new Date().toLocaleString())}. Unofficial: not affiliated with Anthropic, OpenAI, Google or Cursor.</div>
 </body>
 </html>
 `;

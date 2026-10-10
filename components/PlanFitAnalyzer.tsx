@@ -27,7 +27,9 @@ const PlanFitAnalyzer: React.FC<UsagePatternPanelProps> = ({ data, showCliHint =
       <div>
         <h2 className="text-lg font-semibold text-white">Usage pattern</h2>
         <p className="text-sm text-slate-200 mt-1">
-          Plans have a 5-hour limit and a weekly limit, not a daily one. Anthropic doesn't publish their sizes, so this panel gives facts and no verdict.
+          {data.provider === 'anthropic'
+            ? "Plans have a 5-hour limit and a weekly limit, not a daily one. Anthropic doesn't publish their sizes, so this panel gives facts and no verdict."
+            : 'Facts about when you used it. No verdict on limits: this panel only counts replies.'}
         </p>
       </div>
 

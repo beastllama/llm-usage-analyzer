@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import type { UsageReport, DayUsage } from './types.js';
-import type { DayDetail } from './parsers/claude.js';
+import type { DayDetail } from './parsers/common.js';
 import { ensurePrivateFolder, writePrivateFile } from './fsafe.js';
 
 /**

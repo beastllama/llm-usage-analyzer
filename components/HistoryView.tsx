@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useRef } from 'react';
+import React, { useMemo, useEffect, useRef, useState } from 'react';
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, PieChart, Pie, Cell,
@@ -11,8 +11,10 @@ import {
   getWeekdayHeatmap,
   getModelDistribution,
   formatMonth,
+  trendProducts,
   MIN_DAYS_TO_COMPARE,
 } from '../services/trendService';
+import { PRODUCTS, type ProductId } from '../services/products';
 import { formatApproxUsd, formatAtLeastUsd, formatDay, formatTokenNumber, formatUsd, plural } from '../services/format';
 import { CHART_START_SIZE } from './chartSize';
 
@@ -25,10 +27,14 @@ const COLORS = ['#818cf8', '#c084fc', '#f472b6', '#fb7185', '#fbbf24', '#34d399'
 const TOOLTIP_STYLE = { backgroundColor: '#1e293b', border: '1px solid #334155', borderRadius: '8px' };
 
 const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
-  const trends = useMemo(() => analyzeUsageTrends(reports), [reports]);
-  const recentDays = useMemo(() => getRecentDays(reports, 30), [reports]);
-  const weekdayData = useMemo(() => getWeekdayHeatmap(reports), [reports]);
-  const modelData = useMemo(() => getModelDistribution(reports), [reports]);
+  // One product at a time: two tools can cover the same days, and each has its own plan
+  const products = useMemo(() => trendProducts(reports), [reports]);
+  const [picked, setPicked] = useState<ProductId | null>(null);
+  const product = picked && products.includes(picked) ? picked : products[0];
+  const trends = useMemo(() => analyzeUsageTrends(reports, product), [reports, product]);
+  const recentDays = useMemo(() => getRecentDays(reports, 30, product), [reports, product]);
+  const weekdayData = useMemo(() => getWeekdayHeatmap(reports, product), [reports, product]);
+  const modelData = useMemo(() => getModelDistribution(reports, product), [reports, product]);
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   // Land on the heading, so a keyboard or screen-reader user starts at the top of the new screen
@@ -43,7 +49,7 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
         <div className="bg-slate-800/40 rounded-2xl border border-white/10 p-12">
           <Calendar className="w-12 h-12 text-slate-300 mx-auto mb-4" aria-hidden="true" />
           <h1 ref={headingRef} tabIndex={-1} className="text-xl font-bold text-white mb-2 outline-none">No trend to show yet</h1>
-          <p className="text-slate-200 mb-6">Trends need saved Claude Code reports with prices. A claude.ai chat export has none.</p>
+          <p className="text-slate-200 mb-6">Trends need saved reports with prices, from Claude Code, Codex CLI, Gemini CLI or Cursor. A claude.ai chat export has none.</p>
           <button
             onClick={onBack}
             className="px-6 min-h-11 bg-indigo-500 hover:bg-indigo-400 text-white rounded-lg font-medium transition-colors"
@@ -76,13 +82,30 @@ const HistoryView: React.FC<HistoryViewProps> = ({ reports, onBack }) => {
           <ArrowLeft className="w-5 h-5" aria-hidden="true" />
         </button>
         <div>
-          <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-bold text-white outline-none">Trends</h1>
+          <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-bold text-white outline-none">Trends{product && products.length > 1 ? `: ${PRODUCTS[product].name}` : ''}</h1>
           <p className="text-slate-300 text-sm">
             Using {trends.reportsUsed} of {plural(reports.length, 'saved report')}.
             {trends.reportsUsed < reports.length ? ' Chat exports have no prices, and a report that overlaps a newer one is skipped, so no day counts twice.' : ''}
           </p>
         </div>
       </div>
+
+      {products.length > 1 && (
+        <div role="group" aria-label="Show trends for" className="flex flex-wrap gap-2 -mt-4 mb-8">
+          {products.map((id) => (
+            <button
+              key={id}
+              onClick={() => setPicked(id)}
+              aria-pressed={id === product}
+              className={`px-4 min-h-11 rounded-lg border text-sm font-medium ${
+                id === product ? 'bg-indigo-500 border-indigo-300 text-white' : 'bg-slate-900/40 border-slate-500 text-slate-200 hover:border-slate-300'
+              }`}
+            >
+              {PRODUCTS[id].name}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">

@@ -89,3 +89,6 @@ export function formatDate(iso: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? plain(iso) : d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
+
+/** A model id as people read it: "claude-sonnet-5-5" becomes "sonnet-5-5". Other makers' ids stay as they are. */
+export const shortModelName = (model: string): string => plain(model).replace(/^claude-/, '');

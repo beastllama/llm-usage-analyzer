@@ -15,8 +15,16 @@ export interface DayUsage {
   output: number;
 }
 
+/** What the person pays for: the subscription a report is compared with. */
+export type ProductId = 'claude' | 'chatgpt' | 'gemini-api' | 'cursor';
+
 export interface UsageReport {
+  /** Who made the models. Cursor runs models from several makers, so its reports say 'other'. */
   provider: 'anthropic' | 'openai' | 'google' | 'xai' | 'other';
+  /** The subscription this usage counts against. Reports from before this field existed are Claude when the provider is Anthropic. */
+  product?: ProductId;
+  /** The tool the numbers were read from, for example "Claude Code" or "Codex CLI". */
+  tool?: string;
   source: 'local_agent' | 'browser_extension' | 'api' | 'manual_upload' | 'demo' | 'manual_entry';
   period: {
     start: string; // ISO Date string

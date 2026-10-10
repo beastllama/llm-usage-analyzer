@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { priceFor, tokenCost, costByModel, PLANS } from '../src/pricing.ts';
+import { priceFor, tokenCost, costByModel, billingKey, PLANS } from '../src/pricing.ts';
 
 test('dated model IDs match the longest known prefix', () => {
   // "claude-opus-5-5-..." must not be priced as plain "claude-opus-5"
@@ -40,7 +40,21 @@ test('a newer model id that is not in the table is unpriced, not priced like an 
   assert.equal(priceFor('claude-opus-5-6'), null);
   assert.equal(priceFor('claude-sonnet-5-6'), null);
   assert.equal(priceFor('claude-opus-5-5-20260315')?.input, 4);
-  assert.equal(priceFor('gpt-4o'), null);
+  assert.equal(priceFor('gpt-6.2-sol'), null);
+  assert.equal(priceFor('gemini-4-pro'), null);
+});
+test('long prompts and dated price changes are billed under their own keys', () => {
+  assert.equal(billingKey('claude-haiku-5-5', 100_001), 'claude-haiku-5-5-long-prompt');
+  assert.equal(billingKey('claude-haiku-5-5', 100_000), 'claude-haiku-5-5');
+  assert.equal(billingKey('gpt-6.1-sol', 272_001), 'gpt-6.1-sol-long-prompt');
+  assert.equal(billingKey('gpt-6.1-sol', 272_000), 'gpt-6.1-sol');
+  assert.equal(billingKey('gemini-2.5-pro', 200_001), 'gemini-2.5-pro-long-prompt');
+  // Flash has one price for every prompt size
+  assert.equal(billingKey('gemini-3.8-flash', 900_000), 'gemini-3.8-flash');
+  assert.equal(billingKey('gemini-3.8-flash', 10, new Date(2026, 11, 31, 23, 59)), 'gemini-3.8-flash');
+  assert.equal(billingKey('gemini-3.8-flash', 10, new Date(2027, 0, 1, 0, 0)), 'gemini-3.8-flash-from-2027');
+  // An unknown model is left as it is, whatever its size
+  assert.equal(billingKey('gpt-6.2-sol', 900_000), 'gpt-6.2-sol');
 });
 test('Haiku 5.5 requests over 100K prompt tokens use the long-prompt rate', () => {
   assert.equal(priceFor('claude-haiku-5-5-long-prompt')?.input, 0.5);
