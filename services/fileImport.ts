@@ -55,6 +55,7 @@ export function isUsageReport(json: unknown): json is UsageReport {
   if (!isObject(plan) || typeof plan.name !== 'string' || !isCount(plan.price_usd) || !PLAN_TYPES.includes(plan.type as string)) return false;
   if (!isObject(usage) || !isObject(usage.tokens) || !isObject(usage.messages) || !isObject(usage.sessions)) return false;
 
+  if (usage.incomplete !== undefined && typeof usage.incomplete !== 'boolean') return false;
   const { tokens, messages, sessions } = usage;
   if (!isCount(tokens.input) || !isCount(tokens.output) || !isOptionalCount(tokens.cached)) return false;
   if (!isObject(tokens.by_model)) return false;

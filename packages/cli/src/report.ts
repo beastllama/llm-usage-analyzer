@@ -2,6 +2,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ScanOptions, UsageReport } from './types.js';
 import { scanClaudeUsage, getClaudeDataPath } from './parsers/claude.js';
+import { scanCodexUsage, getCodexDataPath } from './parsers/codex.js';
+import { scanGeminiUsage, getGeminiDataPath } from './parsers/gemini.js';
 import { localDayKey, type ParseProgress, type ScanResult } from './parsers/common.js';
 import { loadHistoryChecked, saveHistory, addHistoryToReport, mergeForSave, currentTimeZone, sameZone, historyDir } from './history.js';
 
@@ -28,8 +30,24 @@ export const claudeReader: ToolReader = {
   scan: scanClaudeUsage,
 };
 
+export const codexReader: ToolReader = {
+  tool: 'Codex CLI',
+  key: 'codex',
+  dataPath: getCodexDataPath,
+  envVar: 'CODEX_HOME',
+  scan: scanCodexUsage,
+};
+
+export const geminiReader: ToolReader = {
+  tool: 'Gemini CLI',
+  key: 'gemini',
+  dataPath: getGeminiDataPath,
+  envVar: 'GEMINI_CLI_HOME',
+  scan: scanGeminiUsage,
+};
+
 /** Every tool, in the order they are shown. */
-export const READERS: ToolReader[] = [claudeReader];
+export const READERS: ToolReader[] = [claudeReader, codexReader, geminiReader];
 
 /** True when the tool's folder is there, so it has been used on this computer. */
 export const readerHasData = (reader: ToolReader): boolean => fs.existsSync(reader.dataPath());

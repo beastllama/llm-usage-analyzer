@@ -164,6 +164,10 @@ test('the package is named and wired for npx, and ships the dashboard', async ()
 // ---- Hardening ----
 import { normalizeOrigin, browserCommand } from '../src/commands/serve.ts';
 
+// These tests use Claude Code history only. Codex and Gemini CLI history on this computer must not be read.
+process.env.CODEX_HOME = path.join(os.tmpdir(), `llm-no-codex-${process.pid}`);
+process.env.GEMINI_CLI_HOME = path.join(os.tmpdir(), `llm-no-gemini-${process.pid}`);
+
 test('--origin values must be a plain origin: no path, no *, no "null", no other scheme', () => {
   assert.equal(normalizeOrigin('https://example.com'), 'https://example.com');
   assert.equal(normalizeOrigin('https://example.com/'), 'https://example.com');

@@ -32,6 +32,9 @@ beforeEach(() => {
   env = {
     ...process.env,
     CLAUDE_CONFIG_DIR: path.join(dir, 'claude'),
+    // No Codex or Gemini history: these tests are about the command, with Claude Code history only
+    CODEX_HOME: path.join(dir, 'no-codex'),
+    GEMINI_CLI_HOME: path.join(dir, 'no-gemini'),
     LLM_USAGE_HOME: path.join(dir, 'home'),
     // `node --test` in a real terminal passes FORCE_COLOR=1 to what it runs, and that beats NO_COLOR
     FORCE_COLOR: '0',

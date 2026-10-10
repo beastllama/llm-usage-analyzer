@@ -33,6 +33,9 @@ export function describeCaveats(cmp: MonthlyComparison): string[] {
     out.push(`${Math.round(q.unfinishedShare * 100)}% of your replies were logged before they finished, so the real cost is higher.`);
   }
   // Any usage with no price makes the cost a minimum: nothing says how much it would have added
+  if (q.incomplete) {
+    out.push('Some of your logs could not be read, so the real cost is higher.');
+  }
   if (q.unpricedTokens > 0) {
     out.push(`We have no price for ${nameList(cmp.unpricedModels)}, so the real cost is higher.`);
   }

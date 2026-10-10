@@ -46,6 +46,8 @@ export interface UsageReport {
     sessions: {
       count: number;
     };
+    /** True when some logs could not be read (for example compressed files on an older Node), so the totals are a minimum. */
+    incomplete?: boolean;
   };
 }
 

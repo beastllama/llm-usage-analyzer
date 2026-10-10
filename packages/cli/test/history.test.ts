@@ -6,6 +6,10 @@ import * as path from 'path';
 import { loadHistoryChecked, saveHistory, mergeForSave, addHistoryToReport, sameZone, currentTimeZone } from '../src/history.ts';
 import { buildReport } from '../src/report.ts';
 
+// These tests use Claude Code history only. Codex and Gemini CLI history on this computer must not be read.
+process.env.CODEX_HOME = path.join(os.tmpdir(), `llm-no-codex-${process.pid}`);
+process.env.GEMINI_CLI_HOME = path.join(os.tmpdir(), `llm-no-gemini-${process.pid}`);
+
 let dir: string;
 let file: string;
 
