@@ -49,8 +49,8 @@ export function describeAnswer(cmp: MonthlyComparison): Answer {
       tone: 'payg',
       headline: `${cmp.product.tools} is pay-as-you-go. No plan covers it.`,
       detail: cmp.lowerBound
-        ? `At ${cmp.product.pricesFrom} list prices, your use costs at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month.`
-        : `At ${cmp.product.pricesFrom} list prices, your use costs about ${formatApproxUsd(cmp.apiCostMonthly)} a month. ${estimate}`,
+        ? `At ${cmp.product.pricesFrom} published prices, your use costs at least ${formatAtLeastUsd(cmp.apiCostMonthly)} a month.`
+        : `At ${cmp.product.pricesFrom} published prices, your use costs about ${formatApproxUsd(cmp.apiCostMonthly)} a month. This is an estimate.`,
       caveats,
     };
   }
