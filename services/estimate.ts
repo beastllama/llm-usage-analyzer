@@ -7,6 +7,8 @@ export interface EstimateInput {
   usage: {
     tokens: { by_model: Record<string, TokenCounts> };
     messages: { count: number; unfinished?: number };
+    /** Some logs could not be read, so the totals are a minimum. */
+    incomplete?: boolean;
   };
 }
 
@@ -28,7 +30,9 @@ export interface EstimateQuality {
   pricedTokens: number;
   unpricedTokens: number;
   unpricedShare: number;
-  /** The pay-as-you-go cost is a minimum, because enough of the usage is cut short or unpriced. */
+  /** Some logs could not be read. */
+  incomplete: boolean;
+  /** The pay-as-you-go cost is a minimum, because enough of the usage is cut short or unpriced, or some logs could not be read. */
   lowerBound: boolean;
 }
 
@@ -50,7 +54,8 @@ export function estimateQuality(report: EstimateInput): EstimateQuality {
     pricedTokens,
     unpricedTokens,
     unpricedShare,
-    lowerBound: unfinishedShare > MINIMUM_SHARE || unpricedTokens > 0,
+    incomplete: report.usage.incomplete === true,
+    lowerBound: unfinishedShare > MINIMUM_SHARE || unpricedTokens > 0 || report.usage.incomplete === true,
   };
 }
 

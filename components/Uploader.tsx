@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Upload, Play, Terminal, FileUp, Globe, ArrowLeft, AlertCircle,
-  Copy, Check, ExternalLink, Loader2, ShieldCheck, Download, BarChart3,
+  Copy, Check, ExternalLink, Loader2, ShieldCheck, Download, BarChart3, FileSpreadsheet,
 } from 'lucide-react';
 import { UsageReport } from '../types';
 import { parseUsageFile, MAX_FILE_BYTES, ZIP_MESSAGE, ZIP_SIGNATURE, TOO_BIG_MESSAGE } from '../services/fileImport';
@@ -16,7 +16,7 @@ export interface StartNotice {
 }
 
 interface UploaderProps {
-  onDataLoaded: (data: UsageReport, fromLiveServer?: boolean) => void;
+  onDataLoaded: (reports: UsageReport[], fromLiveServer?: boolean) => void;
   onLoadDemo: () => void;
   /** A message to show on arrival, for example when the local history could not be read. */
   initialNotice?: StartNotice | null;
@@ -24,7 +24,7 @@ interface UploaderProps {
   focusHeading?: boolean;
 }
 
-type ViewState = 'main' | 'web' | 'file';
+type ViewState = 'main' | 'web' | 'cursor' | 'file';
 
 const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNotice = null, focusHeading = false }) => {
   const [view, setView] = useState<ViewState>('main');
@@ -91,7 +91,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       setNotice({ kind: 'error', text: result.error });
       return;
     }
-    onDataLoaded(result.report);
+    onDataLoaded(result.reports);
   };
 
   // A file dropped anywhere on the page opens here. It never opens in a new browser tab.
@@ -122,7 +122,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
       setNotice({ kind: result.reason === 'no-history' ? 'no-history' : 'error', text: result.message });
       return;
     }
-    onDataLoaded(result.report, true);
+    onDataLoaded(result.reports, true);
   };
 
   const copyCommand = async () => {
@@ -175,7 +175,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
         tabIndex={-1}
         aria-hidden="true"
         onChange={handleChange}
-        accept=".json,application/json"
+        accept=".json,application/json,.csv,text/csv"
       />
       <Upload className="w-8 h-8 text-slate-300 mb-3" aria-hidden="true" />
       <p className="text-white font-semibold mb-1">{dragActive ? 'Drop to open' : 'Drop your file here'}</p>
@@ -201,7 +201,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
           tabIndex={-1}
           className="text-4xl md:text-5xl font-bold tracking-tight text-white outline-none"
         >
-          See if a Claude plan beats paying per use.
+          See if your AI plans beat paying per use.
         </h1>
         <p className="text-lg text-slate-300">Runs on your computer. No login. No API key.</p>
       </header>
@@ -227,9 +227,9 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
             <div className="flex items-center gap-3 flex-wrap">
               <div className="p-2.5 rounded-xl bg-indigo-500/15 text-indigo-300"><Terminal className="w-6 h-6" aria-hidden="true" /></div>
               <div className="flex-1 min-w-[10rem]">
-                <h2 id="cc-title" className="text-xl font-bold text-white">I use Claude Code</h2>
+                <h2 id="cc-title" className="text-xl font-bold text-white">I use Claude Code, Codex CLI or Gemini CLI</h2>
                 <p className="text-sm text-slate-300">
-                  {servedByCli ? 'Reads the history Claude Code keeps on this computer.' : 'Run one command. Your browser opens with your answer.'}
+                  {servedByCli ? 'Reads the history these tools keep on this computer.' : 'Run one command. Your browser opens with your answer for each tool.'}
                 </p>
               </div>
               {!noHistory && <span className="text-xs font-semibold text-indigo-200 bg-indigo-500/15 px-2.5 py-1 rounded-full">Recommended</span>}
@@ -263,7 +263,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
                   ? <><Loader2 className="w-5 h-5 motion-safe:animate-spin" aria-hidden="true" /> Reading…</>
                   : <><BarChart3 className="w-5 h-5" aria-hidden="true" />
                       {servedByCli
-                        ? (noHistory ? 'Look again' : 'Read my Claude Code history')
+                        ? (noHistory ? 'Look again' : 'Read my history')
                         : 'Found the analyzer on this computer. Load my data'}</>}
               </button>
             )}
@@ -274,7 +274,19 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
             </p>
           </section>
 
-          {/* Path 2: claude.ai in the browser */}
+          {/* Path 2: Cursor, from its usage export */}
+          <section aria-labelledby="cursor-title" className="bg-slate-900/50 border border-white/10 rounded-2xl p-6 flex flex-wrap items-center gap-4">
+            <div className="p-2.5 rounded-xl bg-sky-500/15 text-sky-300"><FileSpreadsheet className="w-6 h-6" aria-hidden="true" /></div>
+            <div className="flex-1 min-w-[12rem]">
+              <h2 id="cursor-title" className="text-lg font-bold text-white">I use Cursor</h2>
+              <p className="text-sm text-slate-300">Export your usage from Cursor and drop the file in.</p>
+            </div>
+            <button onClick={() => openView('cursor')} className="px-5 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 text-sm font-medium">
+              Show me how<span className="sr-only"> to export my Cursor usage</span>
+            </button>
+          </section>
+
+          {/* Path 3: claude.ai in the browser */}
           <section aria-labelledby="web-title" className={`bg-slate-900/50 border rounded-2xl p-6 flex flex-wrap items-center gap-4 ${noHistory ? 'border-indigo-500/40' : 'border-white/10'}`}>
             <div className="p-2.5 rounded-xl bg-purple-500/15 text-purple-300"><Globe className="w-6 h-6" aria-hidden="true" /></div>
             <div className="flex-1 min-w-[12rem]">
@@ -282,7 +294,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
               <p className="text-sm text-slate-300">Export your chats and drop the file in.</p>
             </div>
             <button onClick={() => openView('web')} className="px-5 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 text-sm font-medium">
-              Show me how
+              Show me how<span className="sr-only"> to export my claude.ai chats</span>
             </button>
           </section>
 
@@ -325,10 +337,34 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
         </div>
       )}
 
+      {view === 'cursor' && (
+        <div className="space-y-6">
+          <section aria-labelledby="cursor-export-title" className="bg-slate-900/60 border border-white/10 rounded-2xl p-6 space-y-4">
+            <h2 id="cursor-export-title" className="text-xl font-bold text-white flex items-center gap-2">
+              <Download className="w-5 h-5 text-sky-300" aria-hidden="true" /> Export your Cursor usage
+            </h2>
+            <ol className="space-y-3 text-sm text-slate-200 list-decimal list-inside">
+              <li>
+                Sign in at{' '}
+                <a href="https://cursor.com/dashboard" target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:text-sky-200 inline-flex items-center gap-1">
+                  cursor.com/dashboard <ExternalLink className="w-3 h-3" aria-hidden="true" /><span className="sr-only">(opens in a new tab)</span>
+                </a>.
+              </li>
+              <li>Open <strong className="text-white">Usage</strong> and choose <strong className="text-white">Export CSV</strong>.</li>
+              <li>Choose the downloaded <strong className="text-white">.csv</strong> file below.</li>
+            </ol>
+            <p className="text-sm text-slate-200 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+              Cursor's "auto" model doesn't say which model answered, so that use can't be priced. The answer then shows a minimum.
+            </p>
+          </section>
+          {dropZone('Choose the Cursor usage .csv. It stays in your browser.')}
+        </div>
+      )}
+
       {view === 'file' && dropZone('Choose the usage_report.json made by `llm-usage-analyzer scan`. It stays in your browser.')}
 
       <p className="text-xs text-slate-400 text-center">
-        Independent project. Not affiliated with Anthropic.
+        Independent project. Not affiliated with Anthropic, OpenAI, Google or Cursor.
       </p>
     </div>
   );

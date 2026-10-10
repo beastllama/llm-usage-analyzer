@@ -4,12 +4,12 @@ import AnalysisDashboard, { LiveStatus, RefreshResult } from './components/Analy
 import HistoryView from './components/HistoryView';
 import ErrorBoundary from './components/ErrorBoundary';
 import { UsageReport, StoredReport } from './types';
-import { MOCK_DATA } from './constants';
+import { DEMO_REPORTS } from './constants';
 import { Activity, History, ChevronDown, Trash2, TrendingUp, Loader2, X } from 'lucide-react';
 import { storageService } from './services/storageService';
 import { servedByCli, fetchLocalUsage, localServerIsUp } from './services/localServer';
 import { safeSession } from './services/safeStorage';
-import { calculateMonthlyTrends } from './services/trendService';
+import { calculateMonthlyTrends, trendProducts } from './services/trendService';
 import { formatDate, plain, plural } from './services/format';
 
 type ViewMode = 'uploader' | 'dashboard' | 'trends';
@@ -35,9 +35,21 @@ const TITLES: Record<ViewMode, string> = {
 
 interface Restored {
   reports: StoredReport[];
-  data: UsageReport | null;
+  data: UsageReport[] | null;
   reportId: string | null;
   view: ViewMode;
+  /** The saved reports of the multi-tool file that is open, in order. */
+  bundleIds?: string[];
+}
+
+/** The saved ids of the open multi-tool file, from this tab's session. */
+function readBundleIds(): string[] | null {
+  try {
+    const ids: unknown = JSON.parse(safeSession.get('currentReportIds') ?? 'null');
+    return Array.isArray(ids) && ids.length > 1 && ids.every((id) => typeof id === 'string') ? ids : null;
+  } catch {
+    return null;
+  }
 }
 
 /** What the screen shows when the page opens: the saved list, and where the person was before a reload. Read once, before the first paint. */
@@ -49,10 +61,16 @@ function restoreSession(): Restored {
 
   const savedView = safeSession.get('viewMode');
   const savedId = safeSession.get('currentReportId');
+  // A file with one report per tool is put back together from its saved reports
+  const bundle = readBundleIds();
+  if (savedView === 'dashboard' && bundle) {
+    const found = bundle.map((id) => reports.find((r) => r.id === id));
+    if (found.every(Boolean)) return { reports, data: found.map((r) => r!.report), reportId: null, view: 'dashboard', bundleIds: bundle };
+  }
   if (savedView && savedId) {
     const found = reports.find((r) => r.id === savedId);
-    if (found) return { reports, data: found.report, reportId: savedId, view: savedView === 'trends' ? 'trends' : 'dashboard' };
-  } else if (savedView === 'trends' && calculateMonthlyTrends(reports).length >= 2) {
+    if (found) return { reports, data: [found.report], reportId: savedId, view: savedView === 'trends' ? 'trends' : 'dashboard' };
+  } else if (savedView === 'trends' && trendProducts(reports).some((id) => calculateMonthlyTrends(reports, id).length >= 2)) {
     return { ...start, view: 'trends' };
   }
   return start;
@@ -60,9 +78,10 @@ function restoreSession(): Restored {
 
 const App: React.FC = () => {
   const [initial] = useState(restoreSession);
-  const [data, setData] = useState<UsageReport | null>(initial.data);
+  const [data, setData] = useState<UsageReport[] | null>(initial.data);
   const [savedReports, setSavedReports] = useState<StoredReport[]>(initial.reports);
   const [currentReportId, setCurrentReportId] = useState<string | null>(initial.reportId);
+  const [bundleIds, setBundleIds] = useState<string[] | null>(initial.bundleIds ?? null);
   const [showHistory, setShowHistory] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>(initial.view);
   const [isLiveData, setIsLiveData] = useState(false);
@@ -84,15 +103,20 @@ const App: React.FC = () => {
   const undoBuffer = useRef<StoredReport[]>([]);
   const deletePause = useRef(false);
 
-  // Months of data among the saved reports. Trends need two.
-  const trendMonths = useMemo(() => calculateMonthlyTrends(savedReports).length, [savedReports]);
+  // Months of data among the saved reports, for the product with the most. Trends need two.
+  const trendMonths = useMemo(
+    () => Math.max(0, ...trendProducts(savedReports).map((id) => calculateMonthlyTrends(savedReports, id).length)),
+    [savedReports],
+  );
 
   // Persist session state on changes
   useEffect(() => {
     safeSession.set('viewMode', viewMode);
     if (currentReportId) safeSession.set('currentReportId', currentReportId);
     else safeSession.remove('currentReportId');
-  }, [viewMode, currentReportId]);
+    if (bundleIds) safeSession.set('currentReportIds', JSON.stringify(bundleIds));
+    else safeSession.remove('currentReportIds');
+  }, [viewMode, currentReportId, bundleIds]);
 
   // The tab title says where you are
   useEffect(() => { document.title = TITLES[viewMode]; }, [viewMode]);
@@ -172,15 +196,16 @@ const App: React.FC = () => {
       }
       return 'error';
     }
-    setData(result.report);
+    setData(result.reports);
     setLive({ connected: true, updatedAt: Date.now() });
     return 'ok';
   }, [isLiveData]);
 
-  const handleDataLoaded = useCallback((uploadedData: UsageReport, fromLiveServer: boolean = false) => {
+  const handleDataLoaded = useCallback((loaded: UsageReport[], fromLiveServer: boolean = false) => {
     liveRun.current++;
     setBoundaryKey((k) => k + 1);
-    setData(uploadedData);
+    setData(loaded);
+    setBundleIds(null);
     setViewMode('dashboard');
     setIsLiveData(fromLiveServer);
     setStartNotice(null);
@@ -189,21 +214,27 @@ const App: React.FC = () => {
     // Live data is not saved, because it changes. Reports opened from history are not saved again.
     if (fromLiveServer || currentReportId) return;
 
-    // Empty reports are not saved
-    const total = uploadedData.usage.tokens.input + uploadedData.usage.tokens.output;
-    if (total === 0 && uploadedData.usage.messages.count === 0) return;
-
+    // Each report of a file is saved on its own (one per tool). Empty reports are not saved.
     const keepFailed = "This report couldn't be kept in your browser (storage is full or blocked). It still shows for this visit.";
-    const duplicate = storageService.findDuplicateReport(uploadedData);
-    if (duplicate) {
-      // Update the saved copy, so a reload shows the same numbers the person just saw
-      if (storageService.updateReportData(duplicate.id, uploadedData)) setCurrentReportId(duplicate.id);
-      else setToast({ message: keepFailed });
-    } else {
-      const saved = storageService.saveReport(uploadedData);
-      if (saved) setCurrentReportId(saved.id);
-      else setToast({ message: keepFailed });
+    let failed = false;
+    const ids = new Map<UsageReport, string>();
+    // Saved newest first, so the first report of the file ends up at the top of the list
+    for (const report of [...loaded].reverse()) {
+      const total = report.usage.tokens.input + report.usage.tokens.output;
+      if (total === 0 && report.usage.messages.count === 0) continue;
+      const duplicate = storageService.findDuplicateReport(report);
+      // Update a saved copy of the same report, so a reload shows the same numbers the person just saw
+      const id = duplicate
+        ? (storageService.updateReportData(duplicate.id, report) ? duplicate.id : null)
+        : storageService.saveReport(report)?.id ?? null;
+      if (id) ids.set(report, id);
+      else failed = true;
     }
+    // A saved report is "the one open" only when the file held one report. A file with several is remembered as a
+    // list, so a reload shows all of them again (only when all of them could be saved).
+    if (loaded.length === 1 && ids.size === 1) setCurrentReportId([...ids.values()][0]);
+    if (loaded.length > 1 && ids.size === loaded.length) setBundleIds(loaded.map((r) => ids.get(r)!));
+    if (failed) setToast({ message: keepFailed });
     setSavedReports(storageService.getReports());
   }, [currentReportId]);
 
@@ -214,7 +245,7 @@ const App: React.FC = () => {
     (async () => {
       const result = await fetchLocalUsage();
       if (cancelled) return;
-      if (result.ok) handleDataLoaded(result.report, true);
+      if (result.ok) handleDataLoaded(result.reports, true);
       else setStartNotice({ kind: result.reason === 'no-history' ? 'no-history' : 'error', text: result.message });
       setReadingLocal(false);
     })();
@@ -225,8 +256,9 @@ const App: React.FC = () => {
   const handleLoadDemo = () => {
     liveRun.current++;
     setBoundaryKey((k) => k + 1);
-    setData(MOCK_DATA);
+    setData(DEMO_REPORTS);
     setCurrentReportId(null); // Demo data is not saved
+    setBundleIds(null);
     setIsLiveData(false);
     setViewMode('dashboard');
   };
@@ -237,18 +269,21 @@ const App: React.FC = () => {
     setNavigated(true);
     setData(null);
     setCurrentReportId(null);
+    setBundleIds(null);
     setIsLiveData(false);
     setStartNotice(null);
     setViewMode('uploader');
     safeSession.remove('viewMode');
     safeSession.remove('currentReportId');
+    safeSession.remove('currentReportIds');
   };
 
   const handleLoadFromHistory = (stored: StoredReport) => {
     liveRun.current++;
     setBoundaryKey((k) => k + 1);
-    setData(stored.report);
+    setData([stored.report]);
     setCurrentReportId(stored.id);
+    setBundleIds(null);
     setIsLiveData(false);
     setShowHistory(false);
     setViewMode('dashboard');
@@ -279,6 +314,8 @@ const App: React.FC = () => {
     setSavedReports(storageService.getReports());
     announceDeleted([stored]);
     if (currentReportId === stored.id) handleReset();
+    // The open multi-tool file can no longer be put back together after a reload
+    if (bundleIds?.includes(stored.id)) setBundleIds(null);
     // The delete button is gone, so focus goes to a place that still exists
     requestAnimationFrame(() => {
       (historyButtonRef.current ?? document.querySelector<HTMLElement>('main h1'))?.focus();
@@ -288,6 +325,7 @@ const App: React.FC = () => {
   const handleDeleteAll = () => {
     const before = storageService.getReports();
     storageService.clearHistory();
+    setBundleIds(null);
     setSavedReports([]);
     setShowHistory(false);
     announceDeleted(before);
@@ -414,7 +452,7 @@ const App: React.FC = () => {
           {viewMode === 'uploader' && readingLocal && (
             <div role="status" className="max-w-md mx-auto text-center py-24 px-4 space-y-3">
               <Loader2 className="w-8 h-8 mx-auto text-indigo-300 motion-safe:animate-spin" aria-hidden="true" />
-              <p className="text-slate-200">Reading your Claude Code history…</p>
+              <p className="text-slate-200">Reading your Claude Code, Codex and Gemini history…</p>
               <p className="text-sm text-slate-300">A big history can take a few seconds.</p>
             </div>
           )}
@@ -423,7 +461,7 @@ const App: React.FC = () => {
           )}
           {viewMode === 'dashboard' && data && (
             <AnalysisDashboard
-              data={data}
+              reports={data}
               onReset={handleReset}
               isLiveData={isLiveData}
               live={live}

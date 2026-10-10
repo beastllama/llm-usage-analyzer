@@ -122,7 +122,7 @@ test('the server hands out the dashboard with the policy, and keeps the Host che
   }
 });
 
-test('with Claude history present, /api/usage returns a report', async () => {
+test('with Claude history present, /api/usage returns its report in a bundle', async () => {
   const web = makeWeb();
   const cfg = fs.mkdtempSync(path.join(os.tmpdir(), 'llm-claude-'));
   const proj = path.join(cfg, 'projects', 'p1');
@@ -141,7 +141,10 @@ test('with Claude history present, /api/usage returns a report', async () => {
     running = await startServer({ port: 0, webDir: web, quiet: true });
     const res = await request(running.port, '/api/usage');
     assert.equal(res.status, 200);
-    const report = JSON.parse(res.body);
+    const bundle = JSON.parse(res.body);
+    assert.equal(bundle.format, 'llm-usage-bundle');
+    const report = bundle.reports.find((r: any) => r.tool === 'Claude Code');
+    assert.equal(report.product, 'claude');
     assert.equal(report.usage.messages.count, 1);
     assert.equal(report.usage.tokens.output, 20);
   } finally {
@@ -160,6 +163,10 @@ test('the package is named and wired for npx, and ships the dashboard', async ()
 
 // ---- Hardening ----
 import { normalizeOrigin, browserCommand } from '../src/commands/serve.ts';
+
+// These tests use Claude Code history only. Codex and Gemini CLI history on this computer must not be read.
+process.env.CODEX_HOME = path.join(os.tmpdir(), `llm-no-codex-${process.pid}`);
+process.env.GEMINI_CLI_HOME = path.join(os.tmpdir(), `llm-no-gemini-${process.pid}`);
 
 test('--origin values must be a plain origin: no path, no *, no "null", no other scheme', () => {
   assert.equal(normalizeOrigin('https://example.com'), 'https://example.com');
@@ -235,7 +242,7 @@ test('many requests at once cost one scan, and they all get the answer', async (
     const port = running.port;
     const answers = await Promise.all(Array.from({ length: 30 }, () => request(port, '/api/usage')));
     assert.ok(answers.every((a) => a.status === 200));
-    assert.ok(answers.every((a) => JSON.parse(a.body).usage.messages.count === 1));
+    assert.ok(answers.every((a) => JSON.parse(a.body).reports[0].usage.messages.count === 1));
 
     // A change shows up once the short reuse window has passed
     fs.appendFileSync(path.join(proj, 's.jsonl'), JSON.stringify({
@@ -243,7 +250,7 @@ test('many requests at once cost one scan, and they all get the answer', async (
       message: { id: 'm2', model: 'claude-sonnet-5-5', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } },
     }) + '\n');
     await new Promise((r) => setTimeout(r, 2200));
-    assert.equal(JSON.parse((await request(port, '/api/usage')).body).usage.messages.count, 2);
+    assert.equal(JSON.parse((await request(port, '/api/usage')).body).reports[0].usage.messages.count, 2);
   } finally {
     if (prev.c === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev.c;
     if (prev.h === undefined) delete process.env.LLM_USAGE_HOME; else process.env.LLM_USAGE_HOME = prev.h;

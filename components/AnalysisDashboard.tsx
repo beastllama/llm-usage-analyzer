@@ -13,12 +13,13 @@ import { describeAnswer } from '../services/answer';
 import { buildAiQuestion, buildShareLine, copyText } from '../services/shareService';
 import { ESTIMATED_MODEL } from '../services/fileImport';
 import { withQuietDays } from '../services/dailyRows';
-import { PLANS, PLAN_KEYS, PlanKey, toPlanKey } from '../services/pricing';
-import { formatAtLeastUsd, formatCount, formatDay, formatTokenNumber, formatUsd, parseDay, plain } from '../services/format';
+import { PRODUCTS, PRODUCT_IDS, findPlan, planOrDefault, productOf, type ProductId } from '../services/products';
+import { formatApproxUsd, formatAtLeastUsd, formatCount, formatDay, formatTokenNumber, formatUsd, parseDay, plain, shortModelName } from '../services/format';
 import { safeLocal } from '../services/safeStorage';
 import { exportToJSON, exportToCSV, exportToPDF } from '../services/exportService';
 import PlanComparison from './PlanComparison';
 import PlanFitAnalyzer from './PlanFitAnalyzer';
+import Overview from './Overview';
 import { CHART_START_SIZE } from './chartSize';
 
 export interface LiveStatus {
@@ -31,7 +32,8 @@ export interface LiveStatus {
 export type RefreshResult = 'ok' | 'stopped' | 'error';
 
 interface DashboardProps {
-  data: UsageReport;
+  /** One report per tool. With more than one, the page starts with an overview and a switch between them. */
+  reports: UsageReport[];
   onReset: () => void;
   isLiveData?: boolean;
   live?: LiveStatus;
@@ -40,7 +42,20 @@ interface DashboardProps {
 }
 
 const COLORS = ['#818cf8', '#c084fc', '#f472b6', '#fb7185', '#fbbf24', '#34d399', '#22d3ee', '#a3a3a3'];
-const PLAN_STORAGE_KEY = 'selectedPlan';
+/** The plan the person picked is remembered per product. Claude's used the old key before there were products. */
+const planStorageKey = (id: ProductId) => `selectedPlan:${id}`;
+const OLD_CLAUDE_PLAN_KEY = 'selectedPlan';
+
+/** The plans picked earlier in this browser, per product. Only names that are still a plan of that product count. */
+function storedPlans(): Partial<Record<ProductId, string>> {
+  const out: Partial<Record<ProductId, string>> = {};
+  for (const id of PRODUCT_IDS) {
+    const saved = safeLocal.get(planStorageKey(id)) ?? (id === 'claude' ? safeLocal.get(OLD_CLAUDE_PLAN_KEY) : null);
+    const plan = findPlan(PRODUCTS[id], saved);
+    if (plan) out[id] = plan.name;
+  }
+  return out;
+}
 
 type Panel = 'compare' | 'pattern' | null;
 interface Notice {
@@ -51,13 +66,27 @@ interface Notice {
 
 const PANEL_NAMES: Record<Exclude<Panel, null>, string> = { compare: 'Compare plans', pattern: 'Usage pattern' };
 
-const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData, live, onLiveRefresh }) => {
-  const storedPlan = useMemo(() => toPlanKey(safeLocal.get(PLAN_STORAGE_KEY)), []);
-  const [selectedPlan, setSelectedPlan] = useState<PlanKey>(storedPlan ?? 'Claude Pro');
-  // Until the person picks a plan, the answer uses Pro, says so, and marks the plan as assumed in anything copied or saved
-  const [planChosen, setPlanChosen] = useState(storedPlan !== null);
-  const choosePlan = (key: PlanKey) => { setSelectedPlan(key); setPlanChosen(true); };
-  const assumed = !planChosen;
+const AnalysisDashboard: React.FC<DashboardProps> = ({ reports, onReset, isLiveData, live, onLiveRefresh }) => {
+  // Which report is shown below the overview, by its tool, so a refresh that adds or drops a tool keeps the same one
+  const keyOf = (r: UsageReport, i: number) => r.tool ?? r.product ?? `#${i}`;
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+  const found = activeKey === null ? -1 : reports.findIndex((r, i) => keyOf(r, i) === activeKey);
+  const active = found >= 0 ? found : 0;
+  const data = reports[active];
+  // Only a plan change is announced from the answer card. A tool switch moves focus there, which reads it already.
+  const [announceAnswer, setAnnounceAnswer] = useState(false);
+  const product = productOf(data);
+  const [chosenPlans, setChosenPlans] = useState(storedPlans);
+  // Until the person picks a plan, the answer uses the product's usual plan, says so, and marks it as assumed in anything copied or saved
+  const chosen = product ? chosenPlans[product.id] : undefined;
+  const selectedPlan = product ? planOrDefault(product, chosen)?.name ?? '' : '';
+  const assumed = !chosen;
+  const choosePlan = (name: string) => {
+    if (!product || !findPlan(product, name)) return;
+    setAnnounceAnswer(true);
+    setChosenPlans((all) => ({ ...all, [product.id]: name }));
+    safeLocal.set(planStorageKey(product.id), name);
+  };
   const [panel, setPanel] = useState<Panel>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [showMore, setShowMore] = useState(false);
@@ -67,6 +96,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const answerRef = useRef<HTMLElement>(null);
 
   const cmp = useMemo(() => calculateAnalysis(data, selectedPlan), [data, selectedPlan]);
   const pattern = useMemo(() => analyzeUsagePattern(data), [data]);
@@ -77,8 +107,6 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   const inputShare = totalTokens > 0 ? (data.usage.tokens.input / totalTokens) * 100 : 0;
   const isDemo = data.source === 'demo';
   const isWebExport = Object.keys(data.usage.tokens.by_model).includes(ESTIMATED_MODEL);
-
-  useEffect(() => { if (planChosen) safeLocal.set(PLAN_STORAGE_KEY, selectedPlan); }, [selectedPlan, planChosen]);
 
   // Land on the page heading, so a keyboard or screen-reader user starts at the top of the new screen
   useEffect(() => {
@@ -162,16 +190,19 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
     setNotice((await copyText(text)) ? { text: done, tone: 'ok' } : { text: 'Could not copy. Your browser blocked it.', tone: 'problem' });
   };
 
-  // The answer only makes sense for Claude usage with at least one priced model
-  const comparable = data.provider === 'anthropic' && cmp.canJudge && totalTokens > 0;
+  // The answer needs a product with plans, and at least one priced model
+  const comparable = cmp.canJudge && totalTokens > 0;
+  const toolName = data.tool ?? product?.tools ?? 'this tool';
   // A share note says something about the person's plan, so it is only offered when there is an answer to share
-  const shareLine = comparable && !isDemo ? buildShareLine(cmp, assumed) : null;
+  const shareLine = comparable && !isDemo && !cmp.payAsYouGo ? buildShareLine(cmp, assumed) : null;
+  // A plan comparison needs plans. A pay-as-you-go tool has none.
+  const hasPlans = comparable && !cmp.payAsYouGo && (product?.plans.length ?? 0) > 0;
   const nothingToCompare = totalTokens === 0
-    ? { title: 'No Claude usage found yet', text: isLiveData ? 'Use Claude Code for a while, then press Refresh.' : 'There is no usage in this file.' }
+    ? { title: `No ${toolName} usage found yet`, text: isLiveData ? `Use ${toolName} for a while, then press Refresh.` : 'There is no usage in this file.' }
     : isWebExport
       ? { title: "Here's your claude.ai activity", text: "claude.ai doesn't say which model replied, so we can't price it. For your real limit, open claude.ai, then Settings → Usage." }
-      : data.provider !== 'anthropic'
-        ? { title: 'Nothing to compare yet', text: 'This report is not from Claude. The comparison covers Claude plans only.' }
+      : !product
+        ? { title: 'Nothing to compare yet', text: "This report isn't from a tool we compare with a plan yet." }
         : { title: 'Nothing to compare yet', text: "We don't have prices for the models you used, so we can't compare costs." };
 
   const dateRange = useMemo(() => {
@@ -187,12 +218,27 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
   const modelBreakdown = useMemo(() => {
     const rows: Array<{ name: string; value: number }> = [];
     for (const [name, t] of Object.entries(data.usage.tokens.by_model)) {
-      rows.push({ name: plain(name).replace(/^claude-/, ''), value: t.input + t.output });
+      rows.push({ name: shortModelName(name), value: t.input + t.output });
     }
     return rows.filter((r) => r.value > 0);
   }, [data]);
 
   const modelTotal = modelBreakdown.reduce((sum, r) => sum + r.value, 0);
+
+  // The whole span of all the reports, for the page title
+  const overall = useMemo(() => ({
+    start: reports.map((r) => r.period.start).sort()[0],
+    end: reports.map((r) => r.period.end).sort().pop() as string,
+  }), [reports]);
+
+  /** Show one tool's answer, and move focus to it so it is clear what changed. */
+  const showReport = (index: number) => {
+    setActiveKey(keyOf(reports[index], index));
+    setAnnounceAnswer(false);
+    setPanel(null);
+    setShowDetails(false);
+    requestAnimationFrame(() => answerRef.current?.focus({ preventScroll: false }));
+  };
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8 space-y-6 pb-20">
@@ -201,7 +247,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
         <div>
           <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-bold text-white outline-none">Your usage</h1>
           <p className="text-slate-300 text-sm">
-            {new Date(data.period.start).toLocaleDateString()} to {new Date(data.period.end).toLocaleDateString()}
+            {new Date(overall.start).toLocaleDateString()} to {new Date(overall.end).toLocaleDateString()}
           </p>
           {isLiveData && live && (
             <p role="status" className={`text-sm mt-1 flex items-center gap-1.5 ${live.connected ? 'text-slate-300' : 'text-amber-200'}`}>
@@ -237,11 +283,11 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
             {showMore && (
               <div id="more-actions" className="absolute left-0 right-0 md:left-auto md:right-0 md:w-72 top-full mt-2 bg-slate-900 border border-white/15 rounded-xl shadow-xl z-30 overflow-hidden">
                 <ul>
-                  {comparable && (
+                  {hasPlans && (
                     <li><MenuItem icon={<Scale className="w-4 h-4" />} onClick={() => openPanel('compare')}>Compare plans</MenuItem></li>
                   )}
                   <li><MenuItem icon={<Sparkles className="w-4 h-4" />} onClick={() => openPanel('pattern')}>Usage pattern</MenuItem></li>
-                  {comparable && !isDemo && (
+                  {hasPlans && !isDemo && (
                     <li className="border-t border-white/10">
                       <MenuItem icon={<MessageCircle className="w-4 h-4" />} onClick={() => copyAndTell(buildAiQuestion(data, cmp, pattern, assumed), 'Copied. Paste it into any AI.')}>Copy for an AI</MenuItem>
                     </li>
@@ -286,11 +332,15 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
         )}
       </div>
 
+      {reports.length > 1 && (
+        <Overview reports={reports} chosenPlans={chosenPlans} active={active} onShow={showReport} />
+      )}
+
       {/* The answer: one card, one sentence, plain numbers */}
-      <section aria-labelledby="answer-title" className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 md:p-8 space-y-6">
+      <section ref={answerRef} tabIndex={-1} aria-labelledby="answer-title" className="bg-slate-800/60 border border-slate-700 rounded-2xl p-6 md:p-8 space-y-6 outline-none scroll-mt-24">
         {/* A live region, so a screen reader hears the answer change when the plan changes */}
-        <div aria-live="polite">
-          <p className="text-xs uppercase tracking-wide text-slate-300">Your answer</p>
+        <div aria-live={announceAnswer ? 'polite' : 'off'}>
+          <p className="text-xs uppercase tracking-wide text-slate-300">{reports.length > 1 ? `${toolName}: your answer` : 'Your answer'}</p>
           {comparable ? (
             <>
               {cmp.lowConfidence && (
@@ -303,8 +353,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                   {warnings.map((c) => <li key={c} className="flex gap-2"><AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />{c}</li>)}
                 </ul>
               )}
-              {assumed && (
-                <p className="text-sm text-slate-300 mt-2">We assumed the Pro plan. Pick yours below.</p>
+              {assumed && hasPlans && product && (
+                <p className="text-sm text-slate-300 mt-2">We assumed {product.defaultPlan}. Pick yours below.</p>
               )}
             </>
           ) : (
@@ -324,11 +374,11 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
         </div>
 
         {/* Plan choice as a simple radio group */}
-        {comparable && (
+        {hasPlans && product && (
           <fieldset>
-            <legend className="text-sm text-slate-300 mb-2">Which plan do you pay for?</legend>
+            <legend className="text-sm text-slate-300 mb-2">Which {product.name} plan do you pay for?</legend>
             <div className="flex flex-wrap gap-2">
-              {PLAN_KEYS.map((key) => (
+              {product.plans.map(({ name: key, price }) => (
                 <label
                   key={key}
                   className={`cursor-pointer px-4 min-h-11 flex items-center gap-2 rounded-lg border text-sm font-medium focus-within:ring-2 focus-within:ring-indigo-300 ${
@@ -339,7 +389,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                 >
                   <input
                     type="radio"
-                    name="plan"
+                    name={`plan-${product.id}`}
                     value={key}
                     checked={key === selectedPlan}
                     onChange={() => choosePlan(key)}
@@ -348,7 +398,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
                     className="sr-only"
                   />
                   {key === selectedPlan && <Check className="w-4 h-4" aria-hidden="true" />}
-                  {key} · {formatUsd(PLANS[key].price)}/mo
+                  {key} · {formatUsd(price)}/mo
                 </label>
               ))}
             </div>
@@ -357,10 +407,18 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
 
         {comparable && (
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="bg-slate-900/50 rounded-xl p-4">
-              <div className="text-xs text-slate-300">Your plan</div>
-              <div className="text-3xl font-bold text-white">{formatUsd(cmp.planPrice)}<span className="text-base text-slate-300 font-normal">/mo</span></div>
-            </div>
+            {!cmp.payAsYouGo && (
+              <div className="bg-slate-900/50 rounded-xl p-4">
+                <div className="text-xs text-slate-300">Your plan</div>
+                <div className="text-3xl font-bold text-white">{formatUsd(cmp.planPrice)}<span className="text-base text-slate-300 font-normal">/mo</span></div>
+                {cmp.onDemandMonthly > 0 && (
+                  <div className="text-sm text-slate-200 mt-1">+ about {formatApproxUsd(cmp.onDemandMonthly)}/mo billed on demand{cmp.onDemandUnknown ? ', and more the export does not price' : ''}</div>
+                )}
+                {cmp.onDemandMonthly === 0 && cmp.onDemandUnknown && (
+                  <div className="text-sm text-slate-200 mt-1">+ on-demand charges the export does not price</div>
+                )}
+              </div>
+            )}
             <div className="bg-slate-900/50 rounded-xl p-4">
               <div className="text-xs text-slate-300">{cmp.lowerBound ? 'Pay-as-you-go (at least)' : 'Pay-as-you-go (estimate)'}</div>
               <div className="text-3xl font-bold text-white">{cmp.lowerBound ? formatAtLeastUsd(cmp.apiCostMonthly) : formatUsd(cmp.apiCostMonthly)}<span className="text-base text-slate-300 font-normal">/mo</span></div>
@@ -368,9 +426,9 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
           </div>
         )}
 
-        {comparable && (
+        {comparable && product && (
           <p className="text-sm text-slate-300">
-            Price only. Plans also differ in how much you can use. Anthropic doesn't publish exact limits.
+            {cmp.payAsYouGo ? product.limitsNote : `Price only. ${product.limitsNote}`}
           </p>
         )}
 
@@ -396,7 +454,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
           {panel === 'pattern' && (
             <div className="bg-slate-800/40 border border-white/10 rounded-2xl p-6 relative">
               <button onClick={closePanel} className="absolute top-3 right-3 text-sm text-slate-200 hover:text-white min-h-11 px-3">Close</button>
-              <PlanFitAnalyzer data={data} showCliHint={!isWebExport} />
+              <PlanFitAnalyzer data={data} showCliHint={!isWebExport && product?.id === 'claude' && data.tool !== 'claude.ai'} />
             </div>
           )}
         </div>
@@ -463,8 +521,8 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
           <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-6">
             <h3 className="text-lg font-semibold text-white mb-4">Sent and received</h3>
             <div className="space-y-5">
-              <Meter label="Sent to Claude (new input)" value={data.usage.tokens.input} percent={inputShare} barClass="bg-indigo-400" />
-              <Meter label="Received from Claude" value={data.usage.tokens.output} percent={100 - inputShare} barClass="bg-emerald-400" />
+              <Meter label="Sent to the model (new input)" value={data.usage.tokens.input} percent={inputShare} barClass="bg-indigo-400" />
+              <Meter label="Received from the model" value={data.usage.tokens.output} percent={100 - inputShare} barClass="bg-emerald-400" />
             </div>
             {data.usage.tokens.cached ? (
               <p className="text-sm text-slate-300 mt-4">
@@ -479,7 +537,7 @@ const AnalysisDashboard: React.FC<DashboardProps> = ({ data, onReset, isLiveData
       )}
 
       <p className="text-xs text-slate-300">
-        Everything here runs on your computer. Nothing is sent anywhere. Unofficial: not affiliated with Anthropic.
+        Everything here runs on your computer. Nothing is sent anywhere. Unofficial: not affiliated with Anthropic, OpenAI, Google or Cursor.
       </p>
     </div>
   );

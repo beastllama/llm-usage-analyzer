@@ -1,4 +1,6 @@
 import { UsageReport } from '../types';
+import { looksLikeCursorCsv, parseCursorCsv } from './cursorImport';
+import { PRODUCT_IDS } from './products';
 
 /**
  * The biggest file this page opens. A file is read as text and parsed, which takes about twice its size in memory
@@ -19,6 +21,9 @@ export const ESTIMATED_MODEL = 'Claude (estimated)';
 
 const DAY_KEY = /^\d{4}-\d{2}-\d{2}$/;
 const PROVIDERS: string[] = ['anthropic', 'openai', 'google', 'xai', 'other'];
+const PRODUCTS: string[] = PRODUCT_IDS;
+/** A tool name is a short label. A long one is a damaged or invented file. */
+const MAX_TOOL_CHARS = 60;
 const SOURCES: string[] = ['local_agent', 'browser_extension', 'api', 'manual_upload', 'demo', 'manual_entry'];
 const PLAN_TYPES: string[] = ['subscription', 'payg'];
 
@@ -40,6 +45,8 @@ const isOptionalCount = (v: unknown): boolean => v === undefined || isCount(v);
 export function isUsageReport(json: unknown): json is UsageReport {
   if (!isObject(json) || typeof json.provider !== 'string' || !PROVIDERS.includes(json.provider)) return false;
   if (typeof json.source !== 'string' || !SOURCES.includes(json.source)) return false;
+  if (json.product !== undefined && (typeof json.product !== 'string' || !PRODUCTS.includes(json.product))) return false;
+  if (json.tool !== undefined && (typeof json.tool !== 'string' || !json.tool || json.tool.length > MAX_TOOL_CHARS)) return false;
 
   const { period, plan, usage } = json;
   if (!isObject(period) || typeof period.start !== 'string' || typeof period.end !== 'string') return false;
@@ -50,6 +57,11 @@ export function isUsageReport(json: unknown): json is UsageReport {
   if (!isObject(plan) || typeof plan.name !== 'string' || !isCount(plan.price_usd) || !PLAN_TYPES.includes(plan.type as string)) return false;
   if (!isObject(usage) || !isObject(usage.tokens) || !isObject(usage.messages) || !isObject(usage.sessions)) return false;
 
+  if (usage.incomplete !== undefined && typeof usage.incomplete !== 'boolean') return false;
+  if (usage.on_demand !== undefined) {
+    const d = usage.on_demand;
+    if (!isObject(d) || !isCount(d.usd) || !isCount(d.rows) || !isCount(d.rows_without_cost)) return false;
+  }
   const { tokens, messages, sessions } = usage;
   if (!isCount(tokens.input) || !isCount(tokens.output) || !isOptionalCount(tokens.cached)) return false;
   if (!isObject(tokens.by_model)) return false;
@@ -99,6 +111,8 @@ const estimateTokens = (text: string) => Math.ceil(text.length / 4);
 export function convertClaudeExport(data: unknown[]): UsageReport {
   const usage: UsageReport = {
     provider: 'anthropic',
+    product: 'claude',
+    tool: 'claude.ai',
     source: 'manual_upload',
     period: { start: new Date().toISOString(), end: new Date().toISOString() },
     // A chat export says nothing about the plan, so none is claimed. The plan is chosen on the screen.
@@ -161,7 +175,32 @@ export function convertClaudeExport(data: unknown[]): UsageReport {
   return usage;
 }
 
-export type ImportResult = { ok: true; report: UsageReport } | { ok: false; error: string };
+/** The format name in a file that holds several reports (one per tool), as written by `llm-usage-analyzer scan`. */
+export const BUNDLE_FORMAT = 'llm-usage-bundle';
+/** More reports than this in one file is not a real scan (there is one per tool). */
+const MAX_BUNDLE_REPORTS = 20;
+
+export interface UsageBundle {
+  format: typeof BUNDLE_FORMAT;
+  version: 1;
+  reports: UsageReport[];
+}
+
+/** A file or answer with several reports. Each one is checked like a single report, and there must be at least one. */
+export function isUsageBundle(json: unknown): json is UsageBundle {
+  return isObject(json) && json.format === BUNDLE_FORMAT && json.version === 1 &&
+    Array.isArray(json.reports) && json.reports.length > 0 && json.reports.length <= MAX_BUNDLE_REPORTS &&
+    json.reports.every(isUsageReport);
+}
+
+/** The reports in a parsed file or server answer: one report, or the reports of a bundle. Null when it is neither. */
+export function reportsIn(json: unknown): UsageReport[] | null {
+  if (isUsageReport(json)) return [json];
+  if (isUsageBundle(json)) return json.reports;
+  return null;
+}
+
+export type ImportResult = { ok: true; reports: UsageReport[] } | { ok: false; error: string };
 
 /** Turn the text of a dropped file into a report, or say plainly what is wrong with it. */
 export function parseUsageFile(text: string, size: number): ImportResult {
@@ -169,22 +208,33 @@ export function parseUsageFile(text: string, size: number): ImportResult {
   if (text.startsWith(ZIP_SIGNATURE)) return { ok: false, error: ZIP_MESSAGE };
   if (size > MAX_FILE_BYTES) return { ok: false, error: TOO_BIG_MESSAGE };
 
+  // A Cursor usage export is a CSV, not JSON
+  if (looksLikeCursorCsv(text)) {
+    const cursor = parseCursorCsv(text);
+    if (cursor.ok === false) return { ok: false, error: cursor.error };
+    // The same check as any other file, so a strange export cannot reach the screens
+    return isUsageReport(cursor.report)
+      ? { ok: true, reports: [cursor.report] }
+      : { ok: false, error: "We couldn't read that Cursor export. Export it again from Cursor's Usage page." };
+  }
+
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
-    return { ok: false, error: "We can't read that file. Choose conversations.json or usage_report.json." };
+    return { ok: false, error: "We can't read that file. Choose conversations.json, a Cursor usage CSV, or usage_report.json." };
   }
 
-  if (isUsageReport(json)) return { ok: true, report: json };
+  const reports = reportsIn(json);
+  if (reports) return { ok: true, reports };
 
   if (Array.isArray(json) && json.some((c) => isObject(c) && (c.uuid || c.chat_messages))) {
     const report = convertClaudeExport(json);
     if (report.usage.messages.count === 0) {
       return { ok: false, error: 'No chats in that file. Look for conversations.json in the unzipped folder.' };
     }
-    return { ok: true, report };
+    return { ok: true, reports: [report] };
   }
 
-  return { ok: false, error: "That file isn't a usage report or a claude.ai export. Choose conversations.json or usage_report.json." };
+  return { ok: false, error: "That file isn't a usage report, a claude.ai export or a Cursor usage CSV. Choose conversations.json, a Cursor CSV, or usage_report.json." };
 }

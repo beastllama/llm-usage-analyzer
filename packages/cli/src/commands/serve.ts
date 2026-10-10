@@ -6,9 +6,7 @@ import { pipeline } from 'stream';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { claudeDataExists, getClaudeDataPath } from '../parsers/claude.js';
-import { buildReport } from '../report.js';
-import type { UsageReport } from '../types.js';
+import { READERS, buildAllReports, readersWithData, toBundle, type UsageBundle } from '../report.js';
 import { wholeNumber } from '../args.js';
 
 export const DEFAULT_PORT = 3456;
@@ -161,15 +159,16 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
   let actualPort = options.port ?? DEFAULT_PORT;
 
   // One scan at a time, and a fresh answer is reused for a moment. Many requests cannot pile up scans.
-  let scanInFlight: Promise<UsageReport> | null = null;
-  let lastScan: { at: number; report: UsageReport } | null = null;
-  const currentReport = (): Promise<UsageReport> => {
-    if (lastScan && Date.now() - lastScan.at < SCAN_CACHE_MS) return Promise.resolve(lastScan.report);
+  let scanInFlight: Promise<UsageBundle> | null = null;
+  let lastScan: { at: number; bundle: UsageBundle } | null = null;
+  const currentBundle = (): Promise<UsageBundle> => {
+    if (lastScan && Date.now() - lastScan.at < SCAN_CACHE_MS) return Promise.resolve(lastScan.bundle);
     if (!scanInFlight) {
-      scanInFlight = buildReport({ days: options.days, save: false })
-        .then(({ report }) => {
-          lastScan = { at: Date.now(), report };
-          return report;
+      scanInFlight = buildAllReports({ days: options.days, save: false })
+        .then((built) => {
+          const bundle = toBundle(built.map((b) => b.report));
+          lastScan = { at: Date.now(), bundle };
+          return bundle;
         })
         .finally(() => { scanInFlight = null; });
     }
@@ -234,14 +233,15 @@ export async function startServer(options: StartOptions = {}): Promise<RunningSe
     }
 
     if (url === '/api/usage') {
-      if (!claudeDataExists()) {
-        json(404, { error: 'No Claude Code history found' });
+      if (readersWithData().length === 0) {
+        json(404, { error: 'No history found' });
         return;
       }
       try {
-        const report = await currentReport();
-        json(200, report);
-        log(chalk.gray(`  ${new Date().toLocaleTimeString()} read ${report.usage.messages.count} replies`));
+        const bundle = await currentBundle();
+        json(200, bundle);
+        const counts = bundle.reports.map((r) => `${r.usage.messages.count} ${r.tool ?? ''} replies`.replace('  ', ' ')).join(', ');
+        log(chalk.gray(`  ${new Date().toLocaleTimeString()} read ${counts}`));
       } catch (error) {
         json(500, { error: 'Could not read usage data' });
         log(chalk.red(`  ${new Date().toLocaleTimeString()} could not read usage data: ${error}`));
@@ -375,12 +375,13 @@ export async function launch(options: LaunchOptions): Promise<void> {
   console.log(chalk.cyan('\n  LLM Usage Analyzer\n'));
 
   const webDir = findWebDir();
-  if (!claudeDataExists()) {
-    console.log(chalk.yellow('  No Claude Code history found on this computer.'));
-    console.log(chalk.gray(`  Looked in: ${getClaudeDataPath()}`));
-    console.log(chalk.gray('  The page will show how to use a claude.ai export instead.\n'));
+  const found = readersWithData();
+  if (found.length === 0) {
+    console.log(chalk.yellow('  No Claude Code, Codex CLI or Gemini CLI history found on this computer.'));
+    for (const reader of READERS) console.log(chalk.gray(`  Looked in: ${reader.dataPath()}`));
+    console.log(chalk.gray('  The page will show how to use a claude.ai export or a Cursor usage file instead.\n'));
   } else {
-    console.log(chalk.gray(`  Reading: ${getClaudeDataPath()}`));
+    for (const reader of found) console.log(chalk.gray(`  Reading ${reader.tool}: ${reader.dataPath()}`));
     if (options.days) console.log(chalk.gray(`  Period: last ${options.days} days`));
   }
 

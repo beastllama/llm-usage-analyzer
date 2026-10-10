@@ -2,6 +2,7 @@ import { UsageReport, StoredReport } from '../types';
 import { safeLocal } from './safeStorage';
 import { isUsageReport } from './fileImport';
 import { formatDate } from './format';
+import { productOf } from './products';
 
 const HISTORY_KEY = 'llm_usage_history';
 const UNREADABLE_KEY = `${HISTORY_KEY}_unreadable`;
@@ -90,15 +91,20 @@ export const storageService = {
     safeLocal.remove(UNREADABLE_KEY);
   },
 
-  /** "Sep 1, 2026 to Sep 15, 2026". Two reports from the same month still get different names. */
+  /** "Codex CLI · Sep 1, 2026 to Sep 15, 2026". Two reports from the same month still get different names. */
   generateReportName(report: UsageReport): string {
-    return `${formatDate(report.period.start)} to ${formatDate(report.period.end)}`;
+    const dates = `${formatDate(report.period.start)} to ${formatDate(report.period.end)}`;
+    return report.tool ? `${report.tool} · ${dates}` : dates;
   },
 
   /** A saved report that covers the same period, if there is one. */
   findDuplicateReport(report: UsageReport): StoredReport | undefined {
+    // A report saved before tools were named has no tool; it is the same report when the product and period match
+    const product = productOf(report)?.id ?? null;
     return this.getReports().find((stored) =>
       stored.report.provider === report.provider &&
+      (productOf(stored.report)?.id ?? null) === product &&
+      (!stored.report.tool || !report.tool || stored.report.tool === report.tool) &&
       stored.report.period.start === report.period.start &&
       stored.report.period.end === report.period.end,
     );

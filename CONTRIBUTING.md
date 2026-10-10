@@ -27,14 +27,17 @@ CI runs the same checks on every pull request.
 
 | Path | What's there |
 |---|---|
-| `services/pricing.ts` | **All prices and plan multipliers.** Change prices here only. |
+| `services/pricing.ts` | **All model prices**, with their source pages. Change prices here only. |
+| `services/products.ts` | What people pay for (Claude, ChatGPT, Gemini API, Cursor) and the plans of each |
 | `services/analysisService.ts` | Monthly estimate, verdict, usage pattern |
 | `services/estimate.ts` | When the estimate is a minimum, and what the answer may say |
-| `components/AnalysisDashboard.tsx` | The main screen. One answer first, details behind a click. |
-| `packages/cli/src/parsers/claude.ts` | Reads Claude Code transcripts. Counts each reply once. |
+| `services/cursorImport.ts` | Reads Cursor's usage CSV |
+| `components/AnalysisDashboard.tsx` | The main screen. An overview of all tools, then one answer per tool, details behind a click. |
+| `packages/cli/src/parsers/` | Reads each tool's local logs (`claude.ts`, `codex.ts`, `gemini.ts`; shared code in `common.ts`). Counts each reply once. |
+| `packages/cli/src/report.ts` | The list of tools, and how each tool's logs plus its saved history become a report |
 | `packages/cli/src/limits.ts` | Status-line readings and the downgrade check |
 | `packages/cli/src/commands/serve.ts` | Local server. Serves the bundled dashboard with its security policy |
-| `packages/cli/src/pricing.ts`, `estimate.ts` | CLI copies of the two files above. A test fails if they differ. Run `npm run sync:pricing` to update them. |
+| `packages/cli/src/pricing.ts`, `estimate.ts`, `products.ts` | CLI copies of the files above. A test fails if they differ. Run `npm run sync:pricing` to update them. |
 | `vercel.json` | Headers for the hosted page. A test checks its policy matches the command's. |
 | `archive/` | Retired code, not built or supported. See `archive/README.md`. |
 
@@ -74,5 +77,5 @@ Report security problems privately. See [SECURITY.md](SECURITY.md).
 
 - Add a test for a formatter in `services/exportService.ts`
 - Improve an error message in `services/fileImport.ts`
-- Add a model to `services/pricing.ts`, with its source link
+- Add a model to `services/pricing.ts`, with its source link (and a row in the price test in `tests/analysis.test.ts`)
 - Make a screen work with the keyboard only, and say what you tested

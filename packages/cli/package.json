@@ -1,7 +1,7 @@
 {
   "name": "llm-usage-analyzer",
   "version": "1.2.0",
-  "description": "See whether your Claude subscription costs more or less than pay-as-you-go. Local, private.",
+  "description": "See whether your AI plans (Claude, ChatGPT, Cursor) cost more or less than pay-as-you-go. Reads Claude Code, Codex CLI and Gemini CLI history. Local, private.",
   "type": "module",
   "bin": {
     "llm-usage-analyzer": "dist/index.js"
@@ -35,6 +35,12 @@
     "claude",
     "claude-code",
     "anthropic",
+    "codex",
+    "chatgpt",
+    "openai",
+    "gemini",
+    "gemini-cli",
+    "cursor",
     "usage",
     "cost",
     "pricing",

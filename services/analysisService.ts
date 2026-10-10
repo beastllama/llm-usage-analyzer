@@ -1,5 +1,6 @@
 import { UsageReport } from "../types";
-import { PLANS, PlanKey, costByModel } from "./pricing";
+import { costByModel } from "./pricing";
+import { PRODUCTS, productOf, planOrDefault, type Product } from "./products";
 import { decide, estimateQuality, type EstimateQuality, type Verdict } from "./estimate";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -19,7 +20,12 @@ export function spanDays(start: string, end: string): number {
 }
 
 export interface MonthlyComparison {
-  planKey: PlanKey;
+  /** The product the report counts against. Reports from a product with no plans list are compared with nothing (canJudge false). */
+  product: Product;
+  /** The plan compared with, by name ("Claude Pro"). Empty when the product has no plan (it is pay-as-you-go). */
+  planKey: string;
+  /** True when the tool is already billed at API prices, so there is no plan to compare with. */
+  payAsYouGo: boolean;
   planPrice: number;
   /** List-price API cost for the report period. */
   apiCostPeriod: number;
@@ -37,19 +43,38 @@ export interface MonthlyComparison {
   /** True when the pay-as-you-go figure is a minimum (cut-short replies or unpriced models). */
   lowerBound: boolean;
   quality: EstimateQuality;
-  /** Absolute monthly difference between plan price and pay-as-you-go estimate. */
+  /** Absolute monthly difference between what was paid (plan plus on-demand) and the pay-as-you-go estimate. */
   difference: number;
+  /** On-demand charges beyond the plan that the tool's export shows (Cursor), scaled to 30 days. 0 when none. */
+  onDemandMonthly: number;
+  /** True when some on-demand use has no cost in the export, so what was paid is higher than shown. */
+  onDemandUnknown: boolean;
+  /** Plan price plus on-demand charges, per month: what the use really cost on the plan. */
+  paidMonthly: number;
 }
 
-export function calculateAnalysis(report: UsageReport, planKey: PlanKey): MonthlyComparison {
+export function calculateAnalysis(report: UsageReport, planName?: string): MonthlyComparison {
   const { cost, unpricedTokens, unpricedModels } = costByModel(report.usage.tokens.by_model);
   const periodDays = spanDays(report.period.start, report.period.end);
   const apiCostMonthly = cost * (30 / periodDays);
-  const planPrice = PLANS[planKey].price;
+  const known = productOf(report);
+  const product = known ?? PRODUCTS.claude;
+  // A report from no known product is compared with no plan
+  const plan = known ? planOrDefault(known, planName) : null;
+  const planPrice = plan?.price ?? 0;
   const quality = estimateQuality(report);
+  const onDemand = report.usage.on_demand;
+  const onDemandMonthly = (onDemand?.usd ?? 0) * (30 / periodDays);
+  const onDemandUnknown = (onDemand?.rows_without_cost ?? 0) > 0;
+  const paidMonthly = planPrice + onDemandMonthly;
+  let verdict = decide(paidMonthly, apiCostMonthly, quality.lowerBound);
+  // Part of what was paid is not known, so the plan cannot be shown to be the cheaper choice
+  if (onDemandUnknown && verdict !== 'switch') verdict = 'unknown';
 
   return {
-    planKey,
+    product,
+    planKey: plan?.name ?? '',
+    payAsYouGo: product.payAsYouGo === true,
     planPrice,
     apiCostPeriod: cost,
     apiCostMonthly,
@@ -57,11 +82,15 @@ export function calculateAnalysis(report: UsageReport, planKey: PlanKey): Monthl
     lowConfidence: periodDays < 7,
     unpricedTokens,
     unpricedModels,
-    canJudge: quality.pricedTokens > 0,
-    verdict: decide(planPrice, apiCostMonthly, quality.lowerBound),
+    // A report from no known product has no plans to compare with
+    canJudge: known !== null && quality.pricedTokens > 0,
+    verdict,
     lowerBound: quality.lowerBound,
     quality,
-    difference: Math.abs(planPrice - apiCostMonthly),
+    difference: Math.abs(paidMonthly - apiCostMonthly),
+    onDemandMonthly,
+    onDemandUnknown,
+    paidMonthly,
   };
 }
 

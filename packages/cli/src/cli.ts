@@ -15,7 +15,7 @@ const COMMANDS = ['scan', 'analyze', 'serve', 'statusline', 'limits'];
 
 program
   .name('llm-usage-analyzer')
-  .description('See whether your Claude subscription costs more or less than pay-as-you-go')
+  .description('See whether your AI plans cost more or less than pay-as-you-go (Claude Code, Codex CLI, Gemini CLI)')
   .version(VERSION);
 
 program.addCommand(scanCommand);
@@ -29,7 +29,7 @@ program
   .option('-d, --days <number>', 'Only include the last N days', wholeNumber)
   .option('--no-open', 'Do not open the browser');
 
-// With no command: open the dashboard on your own Claude Code history
+// With no command: open the dashboard on your own history
 program.action(async (options: { port?: number; days?: number; open: boolean }, command) => {
   // `llm-usage-analyzer scna` (a typo) should be an error, not "start the dashboard"
   if (command.args.length > 0) {

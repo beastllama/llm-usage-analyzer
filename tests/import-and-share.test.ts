@@ -11,7 +11,7 @@ const text = (v: unknown) => JSON.stringify(v);
 test('a CLI usage report loads as it is', () => {
   const r = parseUsageFile(text(MOCK_DATA), 1000);
   assert.equal(r.ok, true);
-  assert.equal(r.ok && r.report.plan.name, MOCK_DATA.plan.name);
+  assert.equal(r.ok && r.reports[0].plan.name, MOCK_DATA.plan.name);
 });
 
 test('a file that is not JSON gets a plain message', () => {
@@ -97,10 +97,10 @@ test('a claude.ai export counts each assistant message once and estimates tokens
   const r = parseUsageFile(text(exportFile), 500);
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.equal(r.report.usage.messages.count, 2);
-  assert.equal(r.report.usage.tokens.input, 100);
-  assert.equal(r.report.usage.tokens.output, 210);
-  assert.ok(ESTIMATED_MODEL in r.report.usage.tokens.by_model);
+  assert.equal(r.reports[0].usage.messages.count, 2);
+  assert.equal(r.reports[0].usage.tokens.input, 100);
+  assert.equal(r.reports[0].usage.tokens.output, 210);
+  assert.ok(ESTIMATED_MODEL in r.reports[0].usage.tokens.by_model);
 });
 
 test('an export that keeps message text in a content list is read too', () => {
@@ -115,8 +115,8 @@ test('an export that keeps message text in a content list is read too', () => {
   const r = parseUsageFile(text(file), 500);
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.equal(r.report.usage.tokens.input, 100);
-  assert.equal(r.report.usage.tokens.output, 201, 'two blocks of 400 characters and a line break between them');
+  assert.equal(r.reports[0].usage.tokens.input, 100);
+  assert.equal(r.reports[0].usage.tokens.output, 201, 'two blocks of 400 characters and a line break between them');
 });
 
 test('each message in an export goes on the day it was written', () => {
@@ -144,8 +144,8 @@ test('messages from someone else, or with no date at all, do not break an export
   const r = parseUsageFile(text(file), 200);
   assert.equal(r.ok, true);
   if (!r.ok) return;
-  assert.equal(r.report.usage.messages.count, 1);
-  assert.deepEqual(r.report.usage.messages.by_day, [], 'no date, so no day row');
+  assert.equal(r.reports[0].usage.messages.count, 1);
+  assert.deepEqual(r.reports[0].usage.messages.by_day, [], 'no date, so no day row');
 });
 
 test('a claude.ai export with no messages says so', () => {

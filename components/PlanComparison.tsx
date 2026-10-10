@@ -1,24 +1,25 @@
 import React, { useMemo } from 'react';
 import { X, Check } from 'lucide-react';
 import { UsageReport } from '../types';
-import { PLANS, PLAN_KEYS } from '../services/pricing';
 import { calculateAnalysis } from '../services/analysisService';
+import { productOf } from '../services/products';
 import { describeCaveats } from '../services/answer';
 import { formatAtLeastUsd, formatUsd } from '../services/format';
 
 interface PlanComparisonProps {
   data: UsageReport;
-  selectedPlan: keyof typeof PLANS;
-  onSelect: (plan: keyof typeof PLANS) => void;
+  selectedPlan: string;
+  onSelect: (plan: string) => void;
   onClose?: () => void;
 }
 
 /**
- * Price-only comparison: each Claude plan against pay-as-you-go at list prices.
+ * Price-only comparison: each plan of the report's product against pay-as-you-go at list prices.
  * It does not judge whether a plan's usage limits would be hit, because those limits are not published.
  */
 const PlanComparison: React.FC<PlanComparisonProps> = ({ data, selectedPlan, onSelect, onClose }) => {
-  const rows = useMemo(() => PLAN_KEYS.map((key) => calculateAnalysis(data, key)), [data]);
+  const product = productOf(data);
+  const rows = useMemo(() => (product ? product.plans.map((plan) => calculateAnalysis(data, plan.name)) : []), [data, product]);
   const first = rows[0];
   const apiMonthly = first?.apiCostMonthly ?? 0;
   const minimum = first?.lowerBound ?? false;
@@ -78,7 +79,9 @@ const PlanComparison: React.FC<PlanComparisonProps> = ({ data, selectedPlan, onS
       </ul>
 
       <p className="text-sm text-slate-300">
-        Price only. Plans also differ in how much you can use (Pro 1x, Max 5x, Max 20x per 5-hour session). Anthropic doesn't publish exact limits.
+        {product?.id === 'claude'
+          ? "Price only. Plans also differ in how much you can use (Pro 1x, Max 5x, Max 20x per 5-hour session). Anthropic doesn't publish exact limits."
+          : `Price only. ${product?.limitsNote ?? ''}`}
       </p>
     </div>
   );

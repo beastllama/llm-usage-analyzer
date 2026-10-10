@@ -5,6 +5,7 @@ import { calculateAnalysis, analyzeUsagePattern, spanDays } from '../services/an
 import { priceFor, tokenCost, PLANS } from '../services/pricing.ts';
 import { getModelDistribution, calculateMonthlyTrends, pickNonOverlapping, analyzeUsageTrends, getWeekdayHeatmap, getDailyBreakdown, formatMonth } from '../services/trendService.ts';
 import { csvCell } from '../services/exportService.ts';
+import { describeAnswer } from '../services/answer.ts';
 import { MOCK_DATA } from '../constants.ts';
 import type { UsageReport, StoredReport } from '../types.ts';
 import { at, report, oneDay, daysOf, storedReport } from './helpers.ts';
@@ -97,10 +98,20 @@ test('retired Opus 4 and 4.1 are priced at their last listed rate', () => {
   assert.deepEqual([p.input, p.output, p.cacheRead, p.cacheWrite, p.cacheWrite1h], [15, 75, 1.5, 18.75, 30]);
 });
 
-test('models from other companies are not priced, because this tool is for Claude plans', () => {
-  assert.equal(priceFor('gpt-4o'), null);
-  assert.equal(priceFor('gpt-4o-2024-05-13'), null);
-  assert.equal(priceFor('o1-2024-12-17'), null);
+test('OpenAI and Gemini models are priced; unknown and newer models are not guessed', () => {
+  assert.equal(priceFor('gpt-6.1-sol')?.input, 2);
+  assert.equal(priceFor('gemini-3.8-flash')?.output, 3.75);
+  // A dated snapshot is the model, except one with its own published price
+  assert.equal(priceFor('gpt-4o-2024-08-06')?.input, 2.5);
+  assert.equal(priceFor('gpt-4o-2024-05-13')?.input, 5);
+  assert.equal(priceFor('o1-2024-12-17')?.input, 15);
+  // Not on the pricing pages, so not priced
+  assert.equal(priceFor('gpt-6.2-sol'), null);
+  assert.equal(priceFor('gemini-3.5-flash'), null);
+  assert.equal(priceFor('codex-auto-review'), null);
+  assert.equal(priceFor('grok-4'), null);
+  // A name that only starts like a known model is not that model
+  assert.equal(priceFor('gpt-5-mini-turbo'), null);
 });
 
 test('the usage pattern reports only facts, with calendar days and active days', () => {
@@ -220,6 +231,79 @@ const GOLDEN: Array<[string, number, number, number, number, number]> = [
   ['claude-haiku-5-5-long-prompt', 0.5, 2.5, 0.05, 0.625, 1],
   ['claude-haiku-4-5', 1, 5, 0.1, 1.25, 2],
   ['claude-3-5-haiku', 0.8, 4, 0.08, 1, 1.6],
+  // OpenAI, from developers.openai.com/api/docs/pricing (2026-10-10). Cache read = "cached input". Where the page lists
+  // no cached price, cached tokens cost full input. Where it lists no cache-write price, writes cost input.
+  ['gpt-6.1-sol', 2, 10, 0.1, 2.5, 2.5],
+  ['gpt-6.1-sol-long-prompt', 4, 15, 0.2, 5, 5],
+  ['gpt-6-astra', 10, 50, 1, 12.5, 12.5],
+  ['gpt-6-astra-long-prompt', 20, 75, 2, 25, 25],
+  ['gpt-6-sol', 2, 10, 0.2, 2.5, 2.5],
+  ['gpt-6-sol-long-prompt', 4, 15, 0.4, 5, 5],
+  ['gpt-6-luna', 0.1, 0.5, 0.01, 0.125, 0.125],
+  ['gpt-6-luna-long-prompt', 0.2, 0.75, 0.02, 0.25, 0.25],
+  ['gpt-5.6-sol', 4, 20, 0.4, 5, 5],
+  ['gpt-5.6-sol-long-prompt', 8, 30, 0.8, 10, 10],
+  ['gpt-5.6-terra', 2, 12, 0.2, 2.5, 2.5],
+  ['gpt-5.6-terra-long-prompt', 4, 18, 0.4, 5, 5],
+  ['gpt-5.6-luna', 0.2, 1.2, 0.02, 0.25, 0.25],
+  ['gpt-5.6-luna-long-prompt', 0.4, 1.8, 0.04, 0.5, 0.5],
+  ['gpt-5.6-cyber', 12.5, 75, 1.25, 15.625, 15.625],
+  ['gpt-5.5', 5, 30, 0.5, 5, 5],
+  ['gpt-5.5-long-prompt', 10, 45, 1, 10, 10],
+  ['gpt-5.5-pro', 30, 180, 30, 30, 30],
+  ['gpt-5.5-pro-long-prompt', 60, 270, 60, 60, 60],
+  ['gpt-5.5-cyber', 12.5, 75, 1.25, 12.5, 12.5],
+  ['gpt-5.4', 2.5, 15, 0.25, 2.5, 2.5],
+  ['gpt-5.4-long-prompt', 5, 22.5, 0.5, 5, 5],
+  ['gpt-5.4-mini', 0.75, 4.5, 0.075, 0.75, 0.75],
+  ['gpt-5.4-nano', 0.2, 1.25, 0.02, 0.2, 0.2],
+  ['gpt-5.4-pro', 30, 180, 30, 30, 30],
+  ['gpt-5.4-pro-long-prompt', 60, 270, 60, 60, 60],
+  ['gpt-5.3-codex', 1.75, 14, 0.175, 1.75, 1.75],
+  ['gpt-5.2', 1.75, 14, 0.175, 1.75, 1.75],
+  ['gpt-5.2-pro', 21, 168, 21, 21, 21],
+  ['gpt-5.2-codex', 1.75, 14, 0.175, 1.75, 1.75],
+  ['gpt-5.1-codex-max', 1.25, 10, 0.125, 1.25, 1.25],
+  ['gpt-5.1-codex-mini', 0.25, 2, 0.025, 0.25, 0.25],
+  ['gpt-5.1-codex', 1.25, 10, 0.125, 1.25, 1.25],
+  ['gpt-5-codex', 1.25, 10, 0.125, 1.25, 1.25],
+  ['codex-mini-latest', 1.5, 6, 0.375, 1.5, 1.5],
+  ['gpt-5.1', 1.25, 10, 0.125, 1.25, 1.25],
+  ['gpt-5', 1.25, 10, 0.125, 1.25, 1.25],
+  ['gpt-5-mini', 0.25, 2, 0.025, 0.25, 0.25],
+  ['gpt-5-nano', 0.05, 0.4, 0.005, 0.05, 0.05],
+  ['gpt-5-pro', 15, 120, 15, 15, 15],
+  ['gpt-4.1', 2, 8, 0.5, 2, 2],
+  ['gpt-4.1-mini', 0.4, 1.6, 0.1, 0.4, 0.4],
+  ['gpt-4.1-nano', 0.1, 0.4, 0.025, 0.1, 0.1],
+  ['gpt-4o', 2.5, 10, 1.25, 2.5, 2.5],
+  ['gpt-4o-2024-05-13', 5, 15, 5, 5, 5],
+  ['gpt-4o-mini', 0.15, 0.6, 0.075, 0.15, 0.15],
+  ['o3-pro', 20, 80, 20, 20, 20],
+  ['o3', 2, 8, 0.5, 2, 2],
+  ['o4-mini', 1.1, 4.4, 0.275, 1.1, 1.1],
+  ['o3-mini', 1.1, 4.4, 0.55, 1.1, 1.1],
+  ['o1', 15, 60, 7.5, 15, 15],
+  ['o1-pro', 150, 600, 150, 150, 150],
+  // Google, from ai.google.dev/gemini-api/docs/pricing (paid tier, 2026-10-10). Cache read = context-caching price.
+  ['gemini-3.8-flash', 0.75, 3.75, 0.075, 0.75, 0.75],
+  ['gemini-3.6-flash', 0.75, 3.75, 0.075, 0.75, 0.75],
+  ['gemini-3.8-flash-from-2027', 1.5, 7.5, 0.15, 1.5, 1.5],
+  ['gemini-3.6-flash-from-2027', 1.5, 7.5, 0.15, 1.5, 1.5],
+  ['gemini-3.5-flash-lite', 0.3, 2.5, 0.03, 0.3, 0.3],
+  ['gemini-3.1-flash-lite', 0.25, 1.5, 0.025, 0.25, 0.25],
+  ['gemini-3.1-pro-preview-customtools', 2, 12, 0.2, 2, 2],
+  ['gemini-3.1-pro-preview-customtools-long-prompt', 4, 18, 0.4, 4, 4],
+  ['gemini-3.1-pro-preview', 2, 12, 0.2, 2, 2],
+  ['gemini-3.1-pro-preview-long-prompt', 4, 18, 0.4, 4, 4],
+  ['gemini-3-flash-preview', 0.5, 3, 0.05, 0.5, 0.5],
+  ['gemini-2.5-pro', 1.25, 10, 0.125, 1.25, 1.25],
+  ['gemini-2.5-pro-long-prompt', 2.5, 15, 0.25, 2.5, 2.5],
+  ['gemini-2.5-flash', 0.3, 2.5, 0.03, 0.3, 0.3],
+  ['gemini-2.5-flash-lite', 0.1, 0.4, 0.01, 0.1, 0.1],
+  // Cursor's own models, from cursor.com/docs/models-and-pricing (2026-10-10). No cache-write price, so writes cost input.
+  ['composer-2.5', 0.5, 2.5, 0.2, 0.5, 0.5],
+  ['composer-2.5-fast', 3, 15, 0.5, 3, 3],
 ];
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 
@@ -350,4 +434,38 @@ test('an unpriced model cannot hide behind a pile of cheap cache reads', () => {
   assert.equal(cmp.lowerBound, true);
   assert.notEqual(cmp.verdict, 'switch', 'it must never claim pay-as-you-go is cheaper');
   assert.equal(cmp.verdict, 'unknown');
+});
+
+// ---- Other products
+
+test('a Codex report is compared with ChatGPT plans, and a plan of another product is not used', () => {
+  const report = { ...oneDay({ tokens: 4_000_000, model: 'gpt-6.1-sol' }), product: 'chatgpt' as const, provider: 'openai' as const, tool: 'Codex CLI' };
+  const plus = calculateAnalysis(report);
+  assert.equal(plus.planKey, 'ChatGPT Plus', 'the usual plan is assumed');
+  assert.equal(plus.product.id, 'chatgpt');
+  // 4M input tokens of gpt-6.1-sol in one day = $8 a day = $240 a month
+  assert.ok(near(plus.apiCostMonthly, 240));
+  assert.equal(plus.verdict, 'keep');
+  assert.equal(calculateAnalysis(report, 'ChatGPT Pro ($500)').verdict, 'switch');
+  // A Claude plan name means nothing here, so the usual ChatGPT plan is used
+  assert.equal(calculateAnalysis(report, 'Claude Max 20x').planKey, 'ChatGPT Plus');
+});
+
+test('Gemini CLI is pay-as-you-go: no plan, and the answer says what the use costs', () => {
+  const report = { ...oneDay({ tokens: 1_000_000, model: 'gemini-2.5-pro' }), product: 'gemini-api' as const, provider: 'google' as const, tool: 'Gemini CLI' };
+  const cmp = calculateAnalysis(report);
+  assert.equal(cmp.payAsYouGo, true);
+  assert.equal(cmp.planKey, '');
+  const answer = describeAnswer(cmp);
+  assert.equal(answer.tone, 'payg');
+  assert.match(answer.headline, /Gemini CLI is pay-as-you-go/);
+  // 1M input tokens of gemini-2.5-pro a day = $1.25 a day = $37.50 a month
+  assert.match(answer.detail, /about \$38 a month/);
+});
+
+test('a report that says some logs were unreadable is only a minimum', () => {
+  const report = { ...oneDay({ tokens: 1_000_000 }), usage: { ...oneDay({ tokens: 1_000_000 }).usage, incomplete: true } };
+  const cmp = calculateAnalysis(report, 'Claude Pro');
+  assert.equal(cmp.lowerBound, true);
+  assert.ok(describeAnswer(cmp).caveats.some((c) => /could not be read/.test(c)));
 });

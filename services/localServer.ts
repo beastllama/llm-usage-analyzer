@@ -1,5 +1,5 @@
 import type { UsageReport } from '../types';
-import { isUsageReport } from './fileImport';
+import { reportsIn } from './fileImport';
 
 /**
  * The dashboard reaches the CLI's local server one of two ways:
@@ -21,11 +21,11 @@ const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]', '::1'];
 export const pageIsLocal: boolean =
   typeof location !== 'undefined' && LOOPBACK_HOSTS.includes(location.hostname);
 
-export const NO_HISTORY_MESSAGE = 'No Claude Code history found on this computer. Using claude.ai instead? Choose that option below.';
+export const NO_HISTORY_MESSAGE = 'No Claude Code, Codex CLI or Gemini CLI history found on this computer. Using claude.ai or Cursor instead? Choose that option below.';
 export const STOPPED_MESSAGE = "Can't reach the analyzer. It may have stopped. Run npx llm-usage-analyzer again.";
 
 export type UsageFetch =
-  | { ok: true; report: UsageReport }
+  | { ok: true; reports: UsageReport[] }
   | { ok: false; reason: 'no-history' | 'stopped' | 'unreadable'; message: string };
 
 /** Let go of a response whose body is not needed. The browser keeps the request open until its body is read or dropped. */
@@ -47,11 +47,12 @@ export async function fetchLocalUsage(timeoutMs = 120_000): Promise<UsageFetch> 
   }
   if (!res.ok) {
     release(res);
-    return { ok: false, reason: 'unreadable', message: "The analyzer couldn't read your Claude Code history. Run it again, or use a file instead." };
+    return { ok: false, reason: 'unreadable', message: "The analyzer couldn't read your history. Run it again, or use a file instead." };
   }
   try {
     const json: unknown = await res.json();
-    if (isUsageReport(json)) return { ok: true, report: json };
+    const reports = reportsIn(json);
+    if (reports) return { ok: true, reports };
   } catch {
     // fall through
   }

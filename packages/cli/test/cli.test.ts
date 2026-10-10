@@ -32,6 +32,9 @@ beforeEach(() => {
   env = {
     ...process.env,
     CLAUDE_CONFIG_DIR: path.join(dir, 'claude'),
+    // No Codex or Gemini history: these tests are about the command, with Claude Code history only
+    CODEX_HOME: path.join(dir, 'no-codex'),
+    GEMINI_CLI_HOME: path.join(dir, 'no-gemini'),
     LLM_USAGE_HOME: path.join(dir, 'home'),
     // `node --test` in a real terminal passes FORCE_COLOR=1 to what it runs, and that beats NO_COLOR
     FORCE_COLOR: '0',
@@ -44,7 +47,9 @@ function run(args: string[], input?: string) {
   return spawnSync(process.execPath, ['--import', 'tsx', ENTRY, ...args], { env, encoding: 'utf8', input, timeout: 30_000, cwd: CLI_ROOT });
 }
 
-const repliesIn = (args: string[]) => JSON.parse(run(['scan', '--json', '--no-save', ...args]).stdout).usage.messages.count;
+// scan writes one report per tool. These tests only have Claude Code history.
+const claudeIn = (json: any) => json.reports.find((r: any) => r.tool === 'Claude Code');
+const repliesIn = (args: string[]) => claudeIn(JSON.parse(run(['scan', '--json', '--no-save', ...args]).stdout)).usage.messages.count;
 
 test('scan --days reaches the scan command, so it changes what is counted', () => {
   assert.equal(repliesIn([]), 3);
@@ -117,7 +122,7 @@ test('scan still writes its report when the history folder cannot be written, an
   const r = run(['scan', '-o', out]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.match(r.stdout, /Could not save your history/);
-  assert.equal(JSON.parse(fs.readFileSync(out, 'utf8')).usage.messages.count, 3);
+  assert.equal(claudeIn(JSON.parse(fs.readFileSync(out, 'utf8'))).usage.messages.count, 3);
 });
 
 test('scan writes the report with owner-only permissions and replaces a link instead of writing through it', () => {
@@ -301,8 +306,8 @@ test('a time zone change between two scans does not double count (through the re
   const home = path.join(dir, 'tzhome');
   const base = { ...env, LLM_USAGE_HOME: home };
   const scan = (tz: string, extra: string[]) => spawnSync(process.execPath, ['--import', 'tsx', ENTRY, 'scan', '--json', ...extra], { env: { ...base, TZ: tz }, encoding: 'utf8', cwd: CLI_ROOT });
-  const first = JSON.parse(scan('America/New_York', []).stdout);
-  const again = JSON.parse(scan('Asia/Tokyo', ['--no-save']).stdout);
+  const first = claudeIn(JSON.parse(scan('America/New_York', []).stdout));
+  const again = claudeIn(JSON.parse(scan('Asia/Tokyo', ['--no-save']).stdout));
   assert.equal(again.usage.messages.count, first.usage.messages.count);
 });
 
