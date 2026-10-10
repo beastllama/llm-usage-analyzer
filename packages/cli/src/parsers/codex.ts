@@ -27,13 +27,19 @@ export function codexHome(): string {
   return process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 }
 
-/** The folder whose presence means Codex has been used here. */
+/** The folder where Codex keeps its sessions (shown to the user). */
 export const getCodexDataPath = (): string => path.join(codexHome(), 'sessions');
+
+/** True when Codex has kept sessions here, current or archived. */
+export const codexHasData = (): boolean =>
+  fs.existsSync(getCodexDataPath()) || fs.existsSync(path.join(codexHome(), 'archived_sessions'));
 
 const isRollout = (name: string): boolean => name.startsWith('rollout-') && (name.endsWith('.jsonl') || name.endsWith('.jsonl.zst'));
 
 /** Node can unpack zstd from 22.15 / 23.8 on. Older versions skip compressed files, and the report says the total is a minimum. */
-const zstd = (zlib as unknown as { zstdDecompressSync?: (buf: Buffer) => Buffer }).zstdDecompressSync;
+const zstd = (zlib as unknown as { zstdDecompressSync?: (buf: Buffer, options?: { maxOutputLength?: number }) => Buffer }).zstdDecompressSync;
+/** The most a compressed session is unpacked to. A real one is far smaller; past this it is not read, and the total is a minimum. */
+const MAX_UNPACKED_BYTES = 256 * 1024 * 1024;
 
 interface Usage {
   input: number;
@@ -92,7 +98,7 @@ export async function scanCodexUsage(
     const dir = path.join(home, sub);
     if (fs.existsSync(dir)) files.push(...findFiles(dir, isRollout, progress.errors));
   }
-  if (files.length === 0 && !fs.existsSync(getCodexDataPath())) {
+  if (files.length === 0 && !codexHasData()) {
     addError(progress, `Codex CLI data folder not found: ${getCodexDataPath()}`);
     return { report, progress, dayDetail: Object.create(null) };
   }
@@ -106,14 +112,19 @@ export async function scanCodexUsage(
   onProgress?.(progress);
 
   const records = new Map<string, Found>();   // by response_id
-  const counted = new Map<string, Found>();   // by running totals, for files without records
+  // Responses found only through running totals (files from before usage records), keyed by [total, usage]
+  const candidates: Array<{ key: string; file: string; copy: boolean; found: Found }> = [];
+  // Running totals that a usage record already covered, anywhere: a copy of one of these is not new usage
+  const coveredKeys = new Set<string>();
   let compressedSkipped = 0;
 
   const readOne = async (file: string, size: number): Promise<void> => {
     // State for this file
     let selfId = file;
     let firstMeta = true;
-    let copiedPrefix = false;       // a forked session starts with a copy of its parent
+    // A fork or a subagent can start with a copy of its parent's lines. Their running totals are then only
+    // counted when the parent's own file does not have them (it may have been deleted).
+    let copyFile = false;
     let subagentStart: number | null = null;
     let model = 'unknown';
     let fast = false;
@@ -133,8 +144,12 @@ export async function scanCodexUsage(
         if (!firstMeta) return;
         firstMeta = false;
         if (typeof p.id === 'string' && p.id) selfId = p.id;
-        copiedPrefix = typeof p.forked_from_id === 'string' && !p.history_base && p.subagent_history_start_ordinal == null;
         if (typeof p.subagent_history_start_ordinal === 'number') subagentStart = p.subagent_history_start_ordinal;
+        const source = p.source as Record<string, unknown> | string | undefined;
+        const derived = typeof p.forked_from_id === 'string' || typeof p.parent_thread_id === 'string' ||
+          (typeof source === 'object' && source !== null && 'subagent' in source);
+        // A file that points at its parent's lines (history_base), or says where its own part starts, copies nothing
+        copyFile = derived && !p.history_base && subagentStart === null;
         return;
       }
       // A subagent's file starts with its parent's context, below this line number
@@ -147,11 +162,7 @@ export async function scanCodexUsage(
 
       if (entry.type === 'event_msg' && p.type === 'thread_settings_applied') {
         const settings = p.thread_settings as Record<string, unknown> | undefined;
-        if (p.thread_id === selfId) {
-          // The fork's own settings come right after the copied part
-          copiedPrefix = false;
-          if (settings && typeof settings.model === 'string' && settings.model) model = modelName(settings.model);
-        }
+        if (p.thread_id === selfId && settings && typeof settings.model === 'string' && settings.model) model = modelName(settings.model);
         if (settings) fast = settings.service_tier === 'priority' || settings.service_tier === 'fast';
         return;
       }
@@ -159,10 +170,11 @@ export async function scanCodexUsage(
       const ts = plausibleTime(entry.timestamp, nowMs);
 
       if (entry.type === 'token_usage_record') {
-        recordsSinceAdvance++;
         const usage = readUsage(p.usage);
         const id = typeof p.response_id === 'string' && p.response_id ? p.response_id : null;
+        // A record without an id or usage covers nothing, so the running total after it still counts
         if (!usage || !id || isEmpty(usage)) return;
+        recordsSinceAdvance++;
         const found: Found = { usage, model, ts, sessionId: selfId, own: p.thread_id === selfId, fast };
         const seen = records.get(id);
         records.set(id, seen ? better(seen, found) : found);
@@ -175,13 +187,18 @@ export async function scanCodexUsage(
         if (!info || typeof info !== 'object') return; // rate limits only
         const total = readUsage(info.total_token_usage);
         if (!total || sameUsage(total, prevTotal)) return; // nothing new
+        const last = readUsage(info.last_token_usage);
+        const key = JSON.stringify([total, last]);
         const covered = recordsSinceAdvance > 0;
         const before = prevTotal;
         prevTotal = total;
         recordsSinceAdvance = 0;
-        if (covered || copiedPrefix) return;
+        if (covered) {
+          coveredKeys.add(key);
+          return;
+        }
 
-        let usage = readUsage(info.last_token_usage);
+        let usage = last;
         if (!usage && before) {
           usage = {
             input: Math.max(0, total.input - before.input),
@@ -191,11 +208,7 @@ export async function scanCodexUsage(
           };
         }
         if (!usage || isEmpty(usage)) return; // a recount after compaction, not a response
-        const key = JSON.stringify([total, usage]);
-        const found: Found = { usage, model, ts, sessionId: selfId, own: true, fast };
-        const seen = counted.get(key);
-        counted.set(key, seen ? better(seen, found) : found);
-        if (seen) progress.duplicatesSkipped++;
+        candidates.push({ key, file, copy: copyFile, found: { usage, model, ts, sessionId: selfId, own: !copyFile, fast } });
       }
     };
 
@@ -204,7 +217,15 @@ export async function scanCodexUsage(
         compressedSkipped++;
         return;
       }
-      const text = zstd(fs.readFileSync(file)).toString('utf8');
+      let text: string;
+      try {
+        // Capped, so a file that unpacks to something huge cannot use up the memory
+        text = zstd(fs.readFileSync(file), { maxOutputLength: MAX_UNPACKED_BYTES }).toString('utf8');
+      } catch {
+        progress.unreadableFiles++;
+        addError(progress, `Could not unpack (damaged, or over ${MAX_UNPACKED_BYTES / (1024 * 1024)} MB unpacked): ${file}`);
+        return;
+      }
       text.split('\n').forEach((line) => onLine(line));
       return;
     }
@@ -216,11 +237,33 @@ export async function scanCodexUsage(
 
   if (compressedSkipped > 0) {
     addError(progress, `${compressedSkipped} compressed Codex session file(s) were not read: this needs Node 22.15 or newer.`);
-    report.usage.incomplete = true;
+  }
+  // Logs that could not be read leave the totals short, so the cost is a minimum (aggregate also checks unreadable files)
+  if (compressedSkipped > 0) report.usage.incomplete = true;
+
+  // Running totals: a session's own response counts once per file (two separate sessions can have the same numbers).
+  // A copy counts only when no file has the original, and then once.
+  const ownKeys = new Set(candidates.filter((c) => !c.copy).map((c) => c.key));
+  const ownSeen = new Set<string>();
+  const copies = new Map<string, Found>();
+  const fromTotals: Found[] = [];
+  for (const c of candidates) {
+    if (coveredKeys.has(c.key)) { progress.duplicatesSkipped++; continue; }
+    if (!c.copy) {
+      const id = `${c.file}\u0000${c.key}`;
+      if (ownSeen.has(id)) { progress.duplicatesSkipped++; continue; }
+      ownSeen.add(id);
+      fromTotals.push(c.found);
+    } else if (ownKeys.has(c.key)) {
+      progress.duplicatesSkipped++;
+    } else {
+      const seen = copies.get(c.key);
+      copies.set(c.key, seen ? better(seen, c.found) : c.found);
+    }
   }
 
   const replies: Reply[] = [];
-  for (const found of [...records.values(), ...counted.values()]) {
+  for (const found of [...records.values(), ...fromTotals, ...copies.values()]) {
     if (!window.contains(found.ts)) continue;
     const { usage } = found;
     const cacheWrite = Math.min(usage.cacheWrite, Math.max(0, usage.input - usage.cached));

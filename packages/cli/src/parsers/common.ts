@@ -12,6 +12,8 @@ export interface ParseProgress {
   filesProcessed: number;
   messagesProcessed: number;
   duplicatesSkipped: number;
+  /** Files that could not be read. Their usage is missing, so the totals are a minimum. */
+  unreadableFiles: number;
   errors: string[];
 }
 
@@ -109,7 +111,7 @@ export const modelName = (value: unknown): string =>
   typeof value === 'string' && value ? value.slice(0, MAX_MODEL_NAME_CHARS) : 'unknown';
 
 export function newProgress(): ParseProgress {
-  return { projectsFound: 0, filesProcessed: 0, messagesProcessed: 0, duplicatesSkipped: 0, errors: [] };
+  return { projectsFound: 0, filesProcessed: 0, messagesProcessed: 0, duplicatesSkipped: 0, unreadableFiles: 0, errors: [] };
 }
 
 /** Keep an error for the --verbose list. Paths come from the disk and can hold control characters, so they are cleaned. */
@@ -244,6 +246,7 @@ export async function readFiles(
     try {
       await readOne(file, fs.statSync(file).size);
     } catch {
+      progress.unreadableFiles++;
       addError(progress, `Could not read: ${file}`);
       continue;
     }
@@ -327,6 +330,7 @@ export function aggregate(report: UsageReport, replies: Iterable<Reply>, progres
   }
 
   report.usage.messages.unfinished = unfinishedTotal;
+  if (progress.unreadableFiles > 0) report.usage.incomplete = true;
   report.usage.sessions.count = sessionIds.size;
   if (minTs) report.period.start = minTs.toISOString();
   if (maxTs) report.period.end = maxTs.toISOString();

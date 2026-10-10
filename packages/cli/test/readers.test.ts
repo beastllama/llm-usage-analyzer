@@ -183,3 +183,67 @@ test('gemini: files outside a chats folder are not chats', async () => {
   const { report } = await scanGeminiUsage();
   assert.equal(report.usage.messages.count, 0);
 });
+
+// ---- Cases found in review: each one failed before its fix
+
+const noRecords = (text: string[]) => text.filter((l) => !l.includes('"token_usage_record"'));
+
+test('codex: an old fork with no marker where its own part starts still counts its own response', async () => {
+  const fork = noRecords(lines(fixture('codex-forked-copy.jsonl'))).filter((l) => !l.includes('"thread_settings_applied"'));
+  rollout('rollout-p.jsonl', noRecords(lines(fixture('codex-forked-copy.jsonl'))).slice(1, 8).join('\n'));
+  rollout('rollout-c.jsonl', fork.join('\n'));
+  const { report } = await scanCodexUsage();
+  assert.equal(report.usage.messages.count, 2);
+  assert.equal(report.usage.tokens.output, 655 + 702);
+});
+
+test('codex: two separate old sessions with the same numbers are two sessions, not one', async () => {
+  const s = noRecords(lines(fixture('codex-session.jsonl')));
+  rollout('rollout-a.jsonl', s.join('\n'));
+  rollout('rollout-b.jsonl', s.map((l) => l.replaceAll('019a7c3e-5b2d-7f41-9c8e-2d4b6a1f0e93', '019a7c3e-ffff-7f41-9c8e-2d4b6a1f0e93')).join('\n'));
+  const { report } = await scanCodexUsage();
+  assert.equal(report.usage.messages.count, 6);
+  assert.equal(report.usage.sessions.count, 2);
+});
+
+test('codex: a subagent that copied its parent\'s running totals (but not its usage records) does not count them again', async () => {
+  const fork = lines(fixture('codex-forked-copy.jsonl'));
+  const parentId = '019a7b90-2c41-7d3a-b5e6-0f1e2d3c4b5a';
+  const childMeta = fork[0]
+    .replace(/"forked_from_id":"[^"]+",/, `"parent_thread_id":"${parentId}",`)
+    .replace('"source":"cli"', `"source":{"subagent":{"thread_spawn":{"parent_thread_id":"${parentId}","depth":1}}}`);
+  rollout('rollout-p.jsonl', fork.slice(1, 9).join('\n'));
+  rollout('rollout-c.jsonl', [childMeta, ...noRecords(fork.slice(1, 9)), ...fork.slice(10)].join('\n'));
+  const { report } = await scanCodexUsage();
+  assert.equal(report.usage.messages.count, 2);
+  assert.equal(report.usage.tokens.output, 655 + 702);
+});
+
+test('codex: a usage record without a response id does not hide the response', async () => {
+  rollout('rollout-a.jsonl', fixture('codex-session.jsonl').replace(/"response_id":"resp_[0-9a-f]+"/g, '"response_id":""'));
+  const { report } = await scanCodexUsage();
+  assert.equal(report.usage.messages.count, 3);
+});
+
+test('a tool counts as used when its history is only in its other folder (archived Codex sessions, Gemini in the macOS sandbox)', async () => {
+  const { readersWithData } = await import('../src/report.ts');
+  const saved = process.env.CLAUDE_CONFIG_DIR;
+  process.env.CLAUDE_CONFIG_DIR = path.join(dir, 'no-claude');
+  try {
+    rollout('rollout-a.jsonl', fixture('codex-session.jsonl'), 'archived_sessions');
+    const chats = path.join(dir, 'gemini-home', '.cache', '.gemini', 'tmp', 'acme', 'chats');
+    fs.mkdirSync(chats, { recursive: true });
+    fs.writeFileSync(path.join(chats, 'session-2026-10-09T09-14-3f6c2d1e.jsonl'), fixture('gemini-session.jsonl'));
+    assert.deepEqual(readersWithData().map((r) => r.key), ['codex', 'gemini']);
+    assert.equal((await scanCodexUsage()).report.usage.messages.count, 3);
+    assert.equal((await scanGeminiUsage()).report.usage.messages.count, 4);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = saved;
+  }
+});
+
+test('codex: a compressed file that cannot be unpacked is skipped, and the total says it is a minimum', async () => {
+  rollout('rollout-a.jsonl.zst', 'this is not zstd');
+  const { report } = await scanCodexUsage();
+  assert.equal(report.usage.incomplete, true);
+});

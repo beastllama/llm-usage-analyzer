@@ -31,6 +31,9 @@ export const getGeminiDataPath = (): string => path.join(geminiHome(), '.gemini'
 // Under the macOS sandbox, Gemini CLI keeps its runtime folder here instead
 const sandboxDataPath = (): string => path.join(geminiHome(), '.cache', '.gemini', 'tmp');
 
+/** True when Gemini CLI has kept chats here, in either place. */
+export const geminiHasData = (): boolean => fs.existsSync(getGeminiDataPath()) || fs.existsSync(sandboxDataPath());
+
 /** A legacy .json chat is read whole. One bigger than this is not a chat file. */
 const MAX_JSON_BYTES = 256 * 1024 * 1024;
 
