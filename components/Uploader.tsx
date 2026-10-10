@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Upload, Play, Terminal, FileUp, Globe, ArrowLeft, AlertCircle,
-  Copy, Check, ExternalLink, Loader2, ShieldCheck, Download, BarChart3,
+  Copy, Check, ExternalLink, Loader2, ShieldCheck, Download, BarChart3, FileSpreadsheet,
 } from 'lucide-react';
 import { UsageReport } from '../types';
 import { parseUsageFile, MAX_FILE_BYTES, ZIP_MESSAGE, ZIP_SIGNATURE, TOO_BIG_MESSAGE } from '../services/fileImport';
@@ -24,7 +24,7 @@ interface UploaderProps {
   focusHeading?: boolean;
 }
 
-type ViewState = 'main' | 'web' | 'file';
+type ViewState = 'main' | 'web' | 'cursor' | 'file';
 
 const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNotice = null, focusHeading = false }) => {
   const [view, setView] = useState<ViewState>('main');
@@ -175,7 +175,7 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
         tabIndex={-1}
         aria-hidden="true"
         onChange={handleChange}
-        accept=".json,application/json"
+        accept=".json,application/json,.csv,text/csv"
       />
       <Upload className="w-8 h-8 text-slate-300 mb-3" aria-hidden="true" />
       <p className="text-white font-semibold mb-1">{dragActive ? 'Drop to open' : 'Drop your file here'}</p>
@@ -274,7 +274,19 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
             </p>
           </section>
 
-          {/* Path 2: claude.ai in the browser */}
+          {/* Path 2: Cursor, from its usage export */}
+          <section aria-labelledby="cursor-title" className="bg-slate-900/50 border border-white/10 rounded-2xl p-6 flex flex-wrap items-center gap-4">
+            <div className="p-2.5 rounded-xl bg-sky-500/15 text-sky-300"><FileSpreadsheet className="w-6 h-6" aria-hidden="true" /></div>
+            <div className="flex-1 min-w-[12rem]">
+              <h2 id="cursor-title" className="text-lg font-bold text-white">I use Cursor</h2>
+              <p className="text-sm text-slate-300">Export your usage from Cursor and drop the file in.</p>
+            </div>
+            <button onClick={() => openView('cursor')} className="px-5 min-h-11 rounded-lg border border-slate-500 text-slate-100 hover:bg-slate-800 text-sm font-medium">
+              Show me how
+            </button>
+          </section>
+
+          {/* Path 3: claude.ai in the browser */}
           <section aria-labelledby="web-title" className={`bg-slate-900/50 border rounded-2xl p-6 flex flex-wrap items-center gap-4 ${noHistory ? 'border-indigo-500/40' : 'border-white/10'}`}>
             <div className="p-2.5 rounded-xl bg-purple-500/15 text-purple-300"><Globe className="w-6 h-6" aria-hidden="true" /></div>
             <div className="flex-1 min-w-[12rem]">
@@ -322,6 +334,30 @@ const Uploader: React.FC<UploaderProps> = ({ onDataLoaded, onLoadDemo, initialNo
             </ol>
           </section>
           {dropZone('Choose conversations.json. It stays in your browser.')}
+        </div>
+      )}
+
+      {view === 'cursor' && (
+        <div className="space-y-6">
+          <section aria-labelledby="cursor-export-title" className="bg-slate-900/60 border border-white/10 rounded-2xl p-6 space-y-4">
+            <h2 id="cursor-export-title" className="text-xl font-bold text-white flex items-center gap-2">
+              <Download className="w-5 h-5 text-sky-300" aria-hidden="true" /> Export your Cursor usage
+            </h2>
+            <ol className="space-y-3 text-sm text-slate-200 list-decimal list-inside">
+              <li>
+                Sign in at{' '}
+                <a href="https://cursor.com/dashboard" target="_blank" rel="noopener noreferrer" className="text-sky-300 hover:text-sky-200 inline-flex items-center gap-1">
+                  cursor.com/dashboard <ExternalLink className="w-3 h-3" aria-hidden="true" /><span className="sr-only">(opens in a new tab)</span>
+                </a>.
+              </li>
+              <li>Open <strong className="text-white">Usage</strong> and choose <strong className="text-white">Export CSV</strong>.</li>
+              <li>Choose the downloaded <strong className="text-white">.csv</strong> file below.</li>
+            </ol>
+            <p className="text-sm text-slate-200 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3">
+              Cursor's "auto" model doesn't say which model answered, so that use can't be priced. The answer then shows a minimum.
+            </p>
+          </section>
+          {dropZone('Choose the Cursor usage .csv. It stays in your browser.')}
         </div>
       )}
 

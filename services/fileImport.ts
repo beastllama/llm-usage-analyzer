@@ -1,4 +1,5 @@
 import { UsageReport } from '../types';
+import { looksLikeCursorCsv, parseCursorCsv } from './cursorImport';
 
 /**
  * The biggest file this page opens. A file is read as text and parsed, which takes about twice its size in memory
@@ -202,11 +203,17 @@ export function parseUsageFile(text: string, size: number): ImportResult {
   if (text.startsWith(ZIP_SIGNATURE)) return { ok: false, error: ZIP_MESSAGE };
   if (size > MAX_FILE_BYTES) return { ok: false, error: TOO_BIG_MESSAGE };
 
+  // A Cursor usage export is a CSV, not JSON
+  if (looksLikeCursorCsv(text)) {
+    const cursor = parseCursorCsv(text);
+    return cursor.ok ? { ok: true, reports: [cursor.report] } : { ok: false, error: cursor.error };
+  }
+
   let json: unknown;
   try {
     json = JSON.parse(text);
   } catch {
-    return { ok: false, error: "We can't read that file. Choose conversations.json or usage_report.json." };
+    return { ok: false, error: "We can't read that file. Choose conversations.json, a Cursor usage CSV, or usage_report.json." };
   }
 
   const reports = reportsIn(json);
@@ -220,5 +227,5 @@ export function parseUsageFile(text: string, size: number): ImportResult {
     return { ok: true, reports: [report] };
   }
 
-  return { ok: false, error: "That file isn't a usage report or a claude.ai export. Choose conversations.json or usage_report.json." };
+  return { ok: false, error: "That file isn't a usage report, a claude.ai export or a Cursor usage CSV. Choose conversations.json, a Cursor CSV, or usage_report.json." };
 }

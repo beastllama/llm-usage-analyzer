@@ -4,6 +4,7 @@
 //   Anthropic: https://platform.claude.com/docs/en/about-claude/pricing
 //   OpenAI:    https://developers.openai.com/api/docs/pricing (and the model pages it links)
 //   Google:    https://ai.google.dev/gemini-api/docs/pricing (paid tier)
+//   Cursor:    https://cursor.com/docs/models-and-pricing (Cursor's own models only)
 // Anything not listed here is shown as "unpriced" instead of guessed.
 
 export interface ModelPrice {
@@ -71,6 +72,15 @@ const gemini = (input: number, output: number, cached: number): ModelPrice => ({
   input,
   output,
   cacheRead: cached,
+  cacheWrite: input,
+  cacheWrite1h: input,
+});
+
+/** A Cursor model price: input, cache read, output. */
+const cursorModel = (input: number, cacheRead: number, output: number): ModelPrice => ({
+  input,
+  output,
+  cacheRead,
   cacheWrite: input,
   cacheWrite1h: input,
 });
@@ -183,6 +193,11 @@ const PRICES: Record<string, ModelPrice | null> = {
   'gemini-2.5-pro-long-prompt': gemini(2.5, 15, 0.25),
   'gemini-2.5-flash': gemini(0.3, 2.5, 0.03),
   'gemini-2.5-flash-lite': gemini(0.1, 0.4, 0.01),
+
+  // ---- Cursor's own models, at Cursor's published rates (https://cursor.com/docs/models-and-pricing). Cursor lists
+  // no cache-write price for them, so cache writes cost input. Keys are the labels in Cursor's usage export.
+  'composer-2.5': cursorModel(0.5, 0.2, 2.5),
+  'composer-2.5-fast': cursorModel(3, 0.5, 15),
 };
 
 // A model id is a table key, optionally followed by a date (-20250929 or -2025-09-29), "-latest", or a context tag

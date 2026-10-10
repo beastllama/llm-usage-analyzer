@@ -5,6 +5,7 @@ import { calculateAnalysis, analyzeUsagePattern, spanDays } from '../services/an
 import { priceFor, tokenCost, PLANS } from '../services/pricing.ts';
 import { getModelDistribution, calculateMonthlyTrends, pickNonOverlapping, analyzeUsageTrends, getWeekdayHeatmap, getDailyBreakdown, formatMonth } from '../services/trendService.ts';
 import { csvCell } from '../services/exportService.ts';
+import { describeAnswer } from '../services/answer.ts';
 import { MOCK_DATA } from '../constants.ts';
 import type { UsageReport, StoredReport } from '../types.ts';
 import { at, report, oneDay, daysOf, storedReport } from './helpers.ts';
@@ -300,6 +301,9 @@ const GOLDEN: Array<[string, number, number, number, number, number]> = [
   ['gemini-2.5-pro-long-prompt', 2.5, 15, 0.25, 2.5, 2.5],
   ['gemini-2.5-flash', 0.3, 2.5, 0.03, 0.3, 0.3],
   ['gemini-2.5-flash-lite', 0.1, 0.4, 0.01, 0.1, 0.1],
+  // Cursor's own models, from cursor.com/docs/models-and-pricing (2026-10-10). No cache-write price, so writes cost input.
+  ['composer-2.5', 0.5, 2.5, 0.2, 0.5, 0.5],
+  ['composer-2.5-fast', 3, 15, 0.5, 3, 3],
 ];
 const near = (a: number, b: number) => Math.abs(a - b) < 1e-9;
 
@@ -430,4 +434,38 @@ test('an unpriced model cannot hide behind a pile of cheap cache reads', () => {
   assert.equal(cmp.lowerBound, true);
   assert.notEqual(cmp.verdict, 'switch', 'it must never claim pay-as-you-go is cheaper');
   assert.equal(cmp.verdict, 'unknown');
+});
+
+// ---- Other products
+
+test('a Codex report is compared with ChatGPT plans, and a plan of another product is not used', () => {
+  const report = { ...oneDay({ tokens: 4_000_000, model: 'gpt-6.1-sol' }), product: 'chatgpt' as const, provider: 'openai' as const, tool: 'Codex CLI' };
+  const plus = calculateAnalysis(report);
+  assert.equal(plus.planKey, 'ChatGPT Plus', 'the usual plan is assumed');
+  assert.equal(plus.product.id, 'chatgpt');
+  // 4M input tokens of gpt-6.1-sol in one day = $8 a day = $240 a month
+  assert.ok(near(plus.apiCostMonthly, 240));
+  assert.equal(plus.verdict, 'keep');
+  assert.equal(calculateAnalysis(report, 'ChatGPT Pro ($500)').verdict, 'switch');
+  // A Claude plan name means nothing here, so the usual ChatGPT plan is used
+  assert.equal(calculateAnalysis(report, 'Claude Max 20x').planKey, 'ChatGPT Plus');
+});
+
+test('Gemini CLI is pay-as-you-go: no plan, and the answer says what the use costs', () => {
+  const report = { ...oneDay({ tokens: 1_000_000, model: 'gemini-2.5-pro' }), product: 'gemini-api' as const, provider: 'google' as const, tool: 'Gemini CLI' };
+  const cmp = calculateAnalysis(report);
+  assert.equal(cmp.payAsYouGo, true);
+  assert.equal(cmp.planKey, '');
+  const answer = describeAnswer(cmp);
+  assert.equal(answer.tone, 'payg');
+  assert.match(answer.headline, /Gemini CLI is pay-as-you-go/);
+  // 1M input tokens of gemini-2.5-pro a day = $1.25 a day = $37.50 a month
+  assert.match(answer.detail, /about \$38 a month/);
+});
+
+test('a report that says some logs were unreadable is only a minimum', () => {
+  const report = { ...oneDay({ tokens: 1_000_000 }), usage: { ...oneDay({ tokens: 1_000_000 }).usage, incomplete: true } };
+  const cmp = calculateAnalysis(report, 'Claude Pro');
+  assert.equal(cmp.lowerBound, true);
+  assert.ok(describeAnswer(cmp).caveats.some((c) => /could not be read/.test(c)));
 });

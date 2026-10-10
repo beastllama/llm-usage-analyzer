@@ -70,6 +70,15 @@ const gemini = (input: number, output: number, cached: number): ModelPrice => ({
   cacheWrite1h: input,
 });
 
+/** A Cursor model price: input, cache read, output. */
+const cursorModel = (input: number, cacheRead: number, output: number): ModelPrice => ({
+  input,
+  output,
+  cacheRead,
+  cacheWrite: input,
+  cacheWrite1h: input,
+});
+
 // null means the family is known but no verified price is, so the model is reported as unpriced.
 const PRICES: Record<string, ModelPrice | null> = {
   'claude-fable-5-1': claude(10, 50, 0.025),
@@ -178,6 +187,11 @@ const PRICES: Record<string, ModelPrice | null> = {
   'gemini-2.5-pro-long-prompt': gemini(2.5, 15, 0.25),
   'gemini-2.5-flash': gemini(0.3, 2.5, 0.03),
   'gemini-2.5-flash-lite': gemini(0.1, 0.4, 0.01),
+
+  // ---- Cursor's own models, at Cursor's published rates (https://cursor.com/docs/models-and-pricing). Cursor lists
+  // no cache-write price for them, so cache writes cost input. Keys are the labels in Cursor's usage export.
+  'composer-2.5': cursorModel(0.5, 0.2, 2.5),
+  'composer-2.5-fast': cursorModel(3, 0.5, 15),
 };
 
 // A model id is a table key, optionally followed by a date (-20250929 or -2025-09-29), "-latest", or a context tag
